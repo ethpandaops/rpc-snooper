@@ -15,7 +15,7 @@ func (s *Snooper) beautifyJson(data []byte) []byte {
 		return data
 	}
 
-	obj := map[string]any{}
+	var obj any
 	err := json.Unmarshal(data, &obj)
 	if err != nil {
 		s.logger.Warnf("failed unmarshaling data: %v", err)
