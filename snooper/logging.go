@@ -32,9 +32,6 @@ func (s *Snooper) beautifyJson(data []byte) []byte {
 }
 
 func (s *Snooper) logRequest(ctx *proxyCallContext, req *http.Request, body []byte) {
-	s.logMutex.Lock()
-	defer s.logMutex.Unlock()
-
 	contentType := req.Header.Get("Content-Type")
 	contentLen := len(body)
 
@@ -52,16 +49,13 @@ func (s *Snooper) logRequest(ctx *proxyCallContext, req *http.Request, body []by
 		logFields["type"] = "json"
 	}
 
-	s.logger.WithFields(logFields).Infof("REQUEST #%v: %v %v", ctx.callIndex, req.Method, req.URL.String())
 	if contentLen > 0 {
-		fmt.Printf("%v\n\n", string(body))
+		logFields["body"] = fmt.Sprintf("%v\n\n", string(body))
 	}
+	s.logger.WithFields(logFields).Infof("REQUEST #%v: %v %v", ctx.callIndex, req.Method, req.URL.String())
 }
 
 func (s *Snooper) logResponse(ctx *proxyCallContext, req *http.Request, rsp *http.Response, body []byte) {
-	s.logMutex.Lock()
-	defer s.logMutex.Unlock()
-
 	contentType := rsp.Header.Get("Content-Type")
 	contentLen := len(body)
 
@@ -80,13 +74,14 @@ func (s *Snooper) logResponse(ctx *proxyCallContext, req *http.Request, rsp *htt
 		logFields["type"] = "json"
 	}
 
+	if contentLen > 0 {
+		logFields["body"] = fmt.Sprintf("%v\n\n", string(body))
+	}
 	s.logger.WithFields(logFields).Infof("RESPONSE #%v: %v %v", ctx.callIndex, req.Method, req.URL.String())
-	fmt.Printf("%v\n\n", string(body))
 }
 
 func (s *Snooper) logEventResponse(ctx *proxyCallContext, req *http.Request, rsp *http.Response, body []byte) {
-	s.logMutex.Lock()
-	defer s.logMutex.Unlock()
+	logFields := logrus.Fields{}
 
 	evt := map[string]any{}
 	for _, line := range strings.Split(string(body), "\n") {
@@ -114,16 +109,15 @@ func (s *Snooper) logEventResponse(ctx *proxyCallContext, req *http.Request, rsp
 		}
 	}
 
-	s.logger.Infof("RESPONSE-EVENT %v %v (status: %v, body: %v)", req.Method, req.URL.EscapedPath(), rsp.StatusCode, len(body))
-
+	logFields["body"] = body
 	if len(evt) >= 2 {
 		bodyJson, err := json.Marshal(evt)
 		if err != nil {
 			s.logger.Warnf("failed parsing event data: %v", err)
 		} else {
-			body = s.beautifyJson(bodyJson)
+			logFields["body"] = fmt.Sprintf("%v\n\n", string(s.beautifyJson(bodyJson)))
 		}
 	}
 
-	fmt.Printf("%v\n\n", string(body))
+	s.logger.WithFields(logFields).Infof("RESPONSE-EVENT %v %v (status: %v, body: %v)", req.Method, req.URL.EscapedPath(), rsp.StatusCode, len(body))
 }

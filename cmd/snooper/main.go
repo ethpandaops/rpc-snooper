@@ -55,6 +55,7 @@ func main() {
 	logrus.Infof("target url: %v", cliArgs.target)
 
 	logger := logrus.New()
+	logger.SetFormatter(&utils.SnooperFormatter{})
 	if cliArgs.verbose {
 		logger.SetLevel(logrus.DebugLevel)
 	}

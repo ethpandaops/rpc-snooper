@@ -22,8 +22,6 @@ type Snooper struct {
 
 	callIndexCounter uint64
 	callIndexMutex   sync.Mutex
-
-	logMutex sync.Mutex
 }
 
 func NewSnooper(target string, logger logrus.FieldLogger) (*Snooper, error) {
