@@ -39,7 +39,16 @@ func main() {
 		return
 	}
 
-	logrus.WithFields(logrus.Fields{
+	logger := logrus.New()
+	formatter := &utils.SnooperFormatter{}
+	formatter.Formatter.FullTimestamp = true
+	formatter.Formatter.DisableColors = cliArgs.nocolor
+	logger.SetFormatter(formatter)
+	if cliArgs.verbose {
+		logger.SetLevel(logrus.DebugLevel)
+	}
+
+	logger.WithFields(logrus.Fields{
 		"version": utils.GetBuildVersion(),
 	}).Infof("initializing rpc-snooper")
 	if cliArgs.version {
@@ -48,26 +57,20 @@ func main() {
 
 	//fmt.Printf("%v", flags.Args())
 	if flags.NArg() < 2 || flags.Arg(1) == "" {
-		logrus.Error("Target URL missing")
+		logger.Error("Target URL missing")
 		return
 	}
 	cliArgs.target = flags.Arg(1)
-	logrus.Infof("target url: %v", cliArgs.target)
-
-	logger := logrus.New()
-	logger.SetFormatter(&utils.SnooperFormatter{})
-	if cliArgs.verbose {
-		logger.SetLevel(logrus.DebugLevel)
-	}
+	logger.Infof("target url: %v", cliArgs.target)
 
 	rpcSnooper, err := snooper.NewSnooper(cliArgs.target, logger)
 	if err != nil {
-		logrus.Errorf("Failed initializing server: %v", err)
+		logger.Errorf("Failed initializing server: %v", err)
 	}
 
 	err = rpcSnooper.StartServer(cliArgs.bind, cliArgs.port, cliArgs.noapi)
 	if err != nil {
-		logrus.Errorf("Failed processing server: %v", err)
+		logger.Errorf("Failed processing server: %v", err)
 	}
 
 }

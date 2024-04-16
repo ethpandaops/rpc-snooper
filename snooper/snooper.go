@@ -57,7 +57,7 @@ func (s *Snooper) StartServer(host string, port int, noApi bool) error {
 		Handler: n,
 	}
 
-	logrus.Printf("listening on: %v", srv.Addr)
+	s.logger.Infof("listening on: %v", srv.Addr)
 	return srv.ListenAndServe()
 }
 

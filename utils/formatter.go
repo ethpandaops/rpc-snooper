@@ -5,7 +5,7 @@ import (
 )
 
 type SnooperFormatter struct {
-	f logrus.TextFormatter
+	Formatter logrus.TextFormatter
 }
 
 func (f *SnooperFormatter) Format(entry *logrus.Entry) ([]byte, error) {
@@ -22,7 +22,7 @@ func (f *SnooperFormatter) Format(entry *logrus.Entry) ([]byte, error) {
 		}
 	}
 
-	lineBuf, err := f.f.Format(entry)
+	lineBuf, err := f.Formatter.Format(entry)
 	if err != nil {
 		return nil, err
 	}
