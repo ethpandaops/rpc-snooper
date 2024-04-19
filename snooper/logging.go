@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/fatih/color"
 	"github.com/sirupsen/logrus"
 )
 
@@ -36,6 +37,7 @@ func (s *Snooper) logRequest(ctx *proxyCallContext, req *http.Request, body []by
 	contentLen := len(body)
 
 	logFields := logrus.Fields{
+		"color":  color.FgCyan,
 		"length": contentLen,
 	}
 
@@ -64,6 +66,12 @@ func (s *Snooper) logResponse(ctx *proxyCallContext, req *http.Request, rsp *htt
 		"length": contentLen,
 	}
 
+	if rsp.StatusCode >= 200 && rsp.StatusCode <= 299 {
+		logFields["color"] = color.FgGreen
+	} else {
+		logFields["color"] = color.FgRed
+	}
+
 	if strings.Contains(contentType, "application/octet-stream") {
 		hexBody := make([]byte, len(body)*2)
 		hex.Encode(hexBody, body)
@@ -81,7 +89,9 @@ func (s *Snooper) logResponse(ctx *proxyCallContext, req *http.Request, rsp *htt
 }
 
 func (s *Snooper) logEventResponse(ctx *proxyCallContext, req *http.Request, rsp *http.Response, body []byte) {
-	logFields := logrus.Fields{}
+	logFields := logrus.Fields{
+		"color": color.FgGreen,
+	}
 
 	evt := map[string]any{}
 	for _, line := range strings.Split(string(body), "\n") {

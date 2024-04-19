@@ -42,7 +42,13 @@ func main() {
 	logger := logrus.New()
 	formatter := &utils.SnooperFormatter{}
 	formatter.Formatter.FullTimestamp = true
-	formatter.Formatter.DisableColors = cliArgs.nocolor
+
+	if cliArgs.nocolor {
+		formatter.DisableColors()
+	} else {
+		formatter.EnableColors()
+	}
+
 	logger.SetFormatter(formatter)
 	if cliArgs.verbose {
 		logger.SetLevel(logrus.DebugLevel)
