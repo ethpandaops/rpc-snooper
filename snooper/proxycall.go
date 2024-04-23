@@ -2,8 +2,6 @@ package snooper
 
 import (
 	"bufio"
-	"bytes"
-	"compress/gzip"
 	"context"
 	"fmt"
 	"io"
@@ -89,35 +87,18 @@ func (s *Snooper) processProxyCall(w http.ResponseWriter, r *http.Request) error
 		return fmt.Errorf("error parsing proxy url: %w", err)
 	}
 
-	// read body
-	reqBodyBytes, err := io.ReadAll(r.Body)
-	if err != nil {
-		return fmt.Errorf("error reading request body: %w", err)
-	}
-
-	reqRawBodyBytes := reqBodyBytes
-	if r.Header.Get("Content-Encoding") == "gzip" {
-		buf := bytes.NewBuffer(reqBodyBytes)
-		reader, err := gzip.NewReader(buf)
-		if err != nil {
-			return fmt.Errorf("failed unpacking gzip request body: %v", err)
-		}
-		defer reader.Close()
-
-		reqRawBodyBytes, err = io.ReadAll(reader)
-		if err != nil {
-			return fmt.Errorf("failed unpacking gzip request body: %v", err)
-		}
-	}
-
-	s.logRequest(callContext, r, reqRawBodyBytes)
+	// stream body
+	bodyReader := s.createTeeLogStream(r.Body, func(reader io.ReadCloser) {
+		s.logRequest(callContext, r, reader)
+	})
+	defer bodyReader.Close()
 
 	// construct request to send to origin server
 	req := &http.Request{
 		Method:        r.Method,
 		URL:           proxyUrl,
 		Header:        hh,
-		Body:          io.NopCloser(bytes.NewReader(reqBodyBytes)),
+		Body:          bodyReader,
 		ContentLength: r.ContentLength,
 		Close:         r.Close,
 	}
@@ -160,30 +141,13 @@ func (s *Snooper) processProxyCall(w http.ResponseWriter, r *http.Request) error
 			s.logger.WithField("callidx", callContext.callIndex).Warnf("event stream error: %v", err)
 		}
 	} else {
-		// read response body
-		rspBodyBytes, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return fmt.Errorf("error reading response body: %w", err)
-		}
+		// stream response body
+		bodyReader := s.createTeeLogStream(resp.Body, func(reader io.ReadCloser) {
+			s.logResponse(callContext, r, resp, reader)
+		})
+		defer bodyReader.Close()
 
-		rspRawBodyBytes := rspBodyBytes
-		if resp.Header.Get("Content-Encoding") == "gzip" {
-			buf := bytes.NewBuffer(rspBodyBytes)
-			reader, err := gzip.NewReader(buf)
-			if err != nil {
-				return fmt.Errorf("failed unpacking gzip response body: %v", err)
-			}
-			defer reader.Close()
-
-			rspRawBodyBytes, err = io.ReadAll(reader)
-			if err != nil {
-				return fmt.Errorf("failed unpacking gzip response body: %v", err)
-			}
-		}
-
-		s.logResponse(callContext, r, resp, rspRawBodyBytes)
-
-		_, err = w.Write(rspBodyBytes)
+		_, err = io.Copy(w, bodyReader)
 		if err != nil {
 			return fmt.Errorf("proxy response stream error: %w", err)
 		}
