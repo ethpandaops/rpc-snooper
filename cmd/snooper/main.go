@@ -47,6 +47,7 @@ func main() {
 		formatter.DisableColors()
 	} else {
 		formatter.EnableColors()
+		formatter.Formatter.ForceColors = true
 	}
 
 	logger.SetFormatter(formatter)
