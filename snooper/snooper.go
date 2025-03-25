@@ -18,14 +18,14 @@ type Snooper struct {
 
 	target *url.URL
 	logger logrus.FieldLogger
-	api    *Api
+	api    *API
 
 	callIndexCounter uint64
 	callIndexMutex   sync.Mutex
 }
 
 func NewSnooper(target string, logger logrus.FieldLogger) (*Snooper, error) {
-	targetUrl, err := url.Parse(target)
+	targetURL, err := url.Parse(target)
 	if err != nil {
 		return nil, err
 	}
@@ -33,16 +33,16 @@ func NewSnooper(target string, logger logrus.FieldLogger) (*Snooper, error) {
 	return &Snooper{
 		CallTimeout: 60 * time.Second,
 
-		target: targetUrl,
+		target: targetURL,
 		logger: logger,
 	}, nil
 }
 
-func (s *Snooper) StartServer(host string, port int, noApi bool) error {
+func (s *Snooper) StartServer(host string, port int, noAPI bool) error {
 	router := mux.NewRouter()
 
-	if !noApi {
-		s.api = newApi(s)
+	if !noAPI {
+		s.api = newAPI(s)
 		s.api.initRouter(router.PathPrefix("/_snooper/").Subrouter())
 	}
 
@@ -53,16 +53,17 @@ func (s *Snooper) StartServer(host string, port int, noApi bool) error {
 	n.UseHandler(router)
 
 	srv := &http.Server{
-		Addr:    fmt.Sprintf("%v:%v", host, port),
-		Handler: n,
+		Addr:              fmt.Sprintf("%v:%v", host, port),
+		Handler:           n,
+		ReadHeaderTimeout: 10 * time.Second,
 	}
 
 	s.logger.Infof("listening on: %v", srv.Addr)
+
 	return srv.ListenAndServe()
 }
 
 func (s *Snooper) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	//s.logger.Infof("snooper call: %v", r.URL.String())
 	err := s.processProxyCall(w, r)
 	if err != nil {
 		s.logger.Errorf("call failed: %v", err)
@@ -70,9 +71,13 @@ func (s *Snooper) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		w.Header().Set("Content-Type", "application/json")
 		j := json.NewEncoder(w)
-		j.Encode(map[string]any{
+
+		err = j.Encode(map[string]any{
 			"status":  "error",
 			"message": err.Error(),
 		})
+		if err != nil {
+			s.logger.Errorf("failed writing response: %v", err)
+		}
 	}
 }

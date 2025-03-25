@@ -32,6 +32,7 @@ func main() {
 	flags.BoolVar(&cliArgs.nocolor, "no-color", false, "Do not use terminal colors in output")
 	flags.BoolVar(&cliArgs.noapi, "no-api", false, "Do not provide management REST api")
 
+	//nolint:errcheck // ignore
 	flags.Parse(os.Args)
 
 	if cliArgs.help {
@@ -51,6 +52,7 @@ func main() {
 	}
 
 	logger.SetFormatter(formatter)
+
 	if cliArgs.verbose {
 		logger.SetLevel(logrus.DebugLevel)
 	}
@@ -58,15 +60,16 @@ func main() {
 	logger.WithFields(logrus.Fields{
 		"version": utils.GetBuildVersion(),
 	}).Infof("initializing rpc-snooper")
+
 	if cliArgs.version {
 		return
 	}
 
-	//fmt.Printf("%v", flags.Args())
 	if flags.NArg() < 2 || flags.Arg(1) == "" {
 		logger.Error("Target URL missing")
 		return
 	}
+
 	cliArgs.target = flags.Arg(1)
 	logger.Infof("target url: %v", cliArgs.target)
 
@@ -79,5 +82,4 @@ func main() {
 	if err != nil {
 		logger.Errorf("Failed processing server: %v", err)
 	}
-
 }

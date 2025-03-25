@@ -21,11 +21,12 @@ func (f *SnooperFormatter) EnableColors() {
 }
 
 func (f *SnooperFormatter) Format(entry *logrus.Entry) ([]byte, error) {
-	data := (map[string]interface{})(entry.Data)
+	data := map[string]interface{}(entry.Data)
 
 	var colorPrint *color.Color
 	if fgColor, isColor := data["color"].(color.Attribute); isColor {
 		colorPrint = color.New(fgColor)
+
 		delete(entry.Data, "color")
 	} else {
 		colorPrint = color.New()
@@ -37,8 +38,9 @@ func (f *SnooperFormatter) Format(entry *logrus.Entry) ([]byte, error) {
 	} else {
 		bodyStr, isString := data["body"].(string)
 		if isString {
-			isBytes = true
 			delete(entry.Data, "body")
+
+			isBytes = true
 			body = []byte(bodyStr)
 		}
 	}
@@ -53,5 +55,6 @@ func (f *SnooperFormatter) Format(entry *logrus.Entry) ([]byte, error) {
 
 		lineBuf = append(lineBuf, coloredBody...)
 	}
+
 	return lineBuf, nil
 }

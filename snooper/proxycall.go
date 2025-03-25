@@ -33,7 +33,9 @@ func (s *Snooper) newProxyCallContext(parent context.Context, timeout time.Durat
 		updateChan: make(chan time.Duration, 5),
 	}
 	callCtx.context, callCtx.cancelFn = context.WithCancel(parent)
+
 	go callCtx.processCallContext()
+
 	return callCtx
 }
 
@@ -52,7 +54,9 @@ ctxLoop:
 			time.Sleep(10 * time.Millisecond)
 		}
 	}
+
 	callContext.cancelled = true
+
 	if callContext.streamReader != nil {
 		callContext.streamReader.Close()
 	}
@@ -64,25 +68,29 @@ func (s *Snooper) processProxyCall(w http.ResponseWriter, r *http.Request) error
 
 	// pass all headers
 	hh := http.Header{}
+
 	for hk, hvs := range r.Header {
 		for _, hv := range hvs {
 			hh.Add(hk, hv)
 		}
 	}
 
-	proxyIpChain := []string{}
+	proxyIPChain := []string{}
+
 	if forwaredFor := r.Header.Get("X-Forwarded-For"); forwaredFor != "" {
-		proxyIpChain = strings.Split(forwaredFor, ", ")
+		proxyIPChain = strings.Split(forwaredFor, ", ")
 	}
-	proxyIpChain = append(proxyIpChain, r.RemoteAddr)
-	hh.Set("X-Forwarded-For", strings.Join(proxyIpChain, ", "))
+
+	proxyIPChain = append(proxyIPChain, r.RemoteAddr)
+	hh.Set("X-Forwarded-For", strings.Join(proxyIPChain, ", "))
 
 	// build proxy url
 	queryArgs := ""
 	if r.URL.RawQuery != "" {
 		queryArgs = fmt.Sprintf("?%s", r.URL.RawQuery)
 	}
-	proxyUrl, err := url.Parse(fmt.Sprintf("%s%s%s", s.target, r.URL.EscapedPath(), queryArgs))
+
+	proxyURL, err := url.Parse(fmt.Sprintf("%s%s%s", s.target, r.URL.EscapedPath(), queryArgs))
 	if err != nil {
 		return fmt.Errorf("error parsing proxy url: %w", err)
 	}
@@ -96,7 +104,7 @@ func (s *Snooper) processProxyCall(w http.ResponseWriter, r *http.Request) error
 	// construct request to send to origin server
 	req := &http.Request{
 		Method:        r.Method,
-		URL:           proxyUrl,
+		URL:           proxyURL,
 		Header:        hh,
 		Body:          bodyReader,
 		ContentLength: r.ContentLength,
@@ -104,14 +112,17 @@ func (s *Snooper) processProxyCall(w http.ResponseWriter, r *http.Request) error
 	}
 	client := &http.Client{Timeout: 0}
 	req = req.WithContext(callContext.context)
+
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("proxy request error: %w", err)
 	}
+
 	if callContext.cancelled {
 		resp.Body.Close()
 		return fmt.Errorf("proxy context cancelled")
 	}
+
 	callContext.streamReader = resp.Body
 
 	respContentType := resp.Header.Get("Content-Type")
@@ -119,6 +130,7 @@ func (s *Snooper) processProxyCall(w http.ResponseWriter, r *http.Request) error
 
 	// passthru response headers
 	respH := w.Header()
+
 	for hk, hvs := range resp.Header {
 		for _, hv := range hvs {
 			respH.Add(hk, hv)
@@ -128,10 +140,12 @@ func (s *Snooper) processProxyCall(w http.ResponseWriter, r *http.Request) error
 	if isEventStream {
 		respH.Set("X-Accel-Buffering", "no")
 	}
+
 	w.WriteHeader(resp.StatusCode)
 
 	if isEventStream && resp.StatusCode == 200 {
 		callContext.updateChan <- s.CallTimeout
+
 		if f, ok := w.(http.Flusher); ok {
 			f.Flush()
 		}
@@ -162,29 +176,36 @@ func (s *Snooper) processEventStreamResponse(callContext *proxyCallContext, r *h
 
 	for {
 		lineBuf := []byte{}
+
 		for {
 			evt, err := rd.ReadSlice('\n')
 			if err != nil {
 				return written, err
 			}
+
 			wb, err := w.Write(evt)
 			if err != nil {
 				return written, err
 			}
+
 			written += int64(wb)
+
 			if wb == 1 {
 				break
 			}
+
 			lineBuf = append(lineBuf, evt...)
 			lineBuf = append(lineBuf, '\n')
 		}
+
 		if len(lineBuf) > 2 {
-			s.logEventResponse(callContext, r, rsp, lineBuf)
+			s.logEventResponse(r, rsp, lineBuf)
 		}
 
 		if f, ok := w.(http.Flusher); ok {
 			f.Flush()
 		}
+
 		if callContext.cancelled {
 			return written, nil
 		}
