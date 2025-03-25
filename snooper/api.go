@@ -6,17 +6,16 @@ import (
 	"github.com/gorilla/mux"
 )
 
-type Api struct {
+type API struct {
 	snooper *Snooper
 }
 
-func newApi(snooper *Snooper) *Api {
-	return &Api{
+func newAPI(snooper *Snooper) *API {
+	return &API{
 		snooper: snooper,
 	}
 }
 
-func (api *Api) initRouter(router *mux.Router) {
-
+func (api *API) initRouter(router *mux.Router) {
 	router.PathPrefix("/").Handler(http.DefaultServeMux)
 }

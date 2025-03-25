@@ -15,8 +15,9 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-func (s *Snooper) beautifyJson(body []byte) []byte {
+func (s *Snooper) beautifyJSON(body []byte) []byte {
 	var obj any
+
 	err := json.Unmarshal(body, &obj)
 	if err != nil {
 		s.logger.Warnf("failed unmarshaling data: %v", err)
@@ -44,7 +45,11 @@ func (s *Snooper) createTeeLogStream(stream io.ReadCloser, logfn func(reader io.
 	go func() {
 		defer func() {
 			if err := recover(); err != nil {
-				s.logger.WithError(err.(error)).Errorf("uncaught panic in log reader: %v, stack: %v", err, string(debug.Stack()))
+				if err2, ok := err.(error); ok {
+					s.logger.WithError(err2).Errorf("uncaught panic in log reader: %v, stack: %v", err, string(debug.Stack()))
+				} else {
+					s.logger.Errorf("uncaught panic in log reader: %v, stack: %v", err, string(debug.Stack()))
+				}
 			}
 		}()
 		defer logReader.Close()
@@ -57,16 +62,22 @@ func (s *Snooper) createTeeLogStream(stream io.ReadCloser, logfn func(reader io.
 	}
 }
 
-func (r *logReadCloser) Read(p []byte) (n int, err error) { return r.reader.Read(p) }
+func (r *logReadCloser) Read(p []byte) (n int, err error) {
+	return r.reader.Read(p)
+}
+
 func (r *logReadCloser) Close() error {
 	fmt.Printf("logReadCloser close")
+
 	var resErr error
+
 	for _, closer := range r.closers {
 		err := closer.Close()
 		if err != nil && resErr == nil {
 			resErr = err
 		}
 	}
+
 	return resErr
 }
 
@@ -90,17 +101,18 @@ func (s *Snooper) logRequest(ctx *proxyCallContext, req *http.Request, body io.R
 		"length": req.ContentLength,
 	}
 
-	if req.ContentLength == 0 {
+	switch {
+	case req.ContentLength == 0:
 		logFields["body"] = []byte{}
-	} else if strings.Contains(contentType, "application/octet-stream") {
+	case strings.Contains(contentType, "application/octet-stream"):
 		body = utils.NewHexEncoder(body)
 		bodyData, _ := io.ReadAll(body)
 		logFields["type"] = "ssz"
 		logFields["body"] = fmt.Sprintf("%v\n\n", string(bodyData))
-	} else {
+	default:
 		bodyData, _ := io.ReadAll(body)
 
-		if bodyData = s.beautifyJson(bodyData); len(bodyData) > 0 {
+		if bodyData = s.beautifyJSON(bodyData); len(bodyData) > 0 {
 			logFields["type"] = "json"
 			logFields["body"] = fmt.Sprintf("%v\n\n", string(bodyData))
 		} else {
@@ -140,16 +152,17 @@ func (s *Snooper) logResponse(ctx *proxyCallContext, req *http.Request, rsp *htt
 		logFields["color"] = color.FgRed
 	}
 
-	if rsp.ContentLength == 0 {
+	switch {
+	case rsp.ContentLength == 0:
 		logFields["body"] = []byte{}
-	} else if strings.Contains(contentType, "application/octet-stream") {
+	case strings.Contains(contentType, "application/octet-stream"):
 		body = utils.NewHexEncoder(body)
 		bodyData, _ := io.ReadAll(body)
 		logFields["type"] = "ssz"
 		logFields["body"] = fmt.Sprintf("%v\n\n", string(bodyData))
-	} else {
+	default:
 		bodyData, _ := io.ReadAll(body)
-		if bodyData = s.beautifyJson(bodyData); len(bodyData) > 0 {
+		if bodyData = s.beautifyJSON(bodyData); len(bodyData) > 0 {
 			logFields["type"] = "json"
 			logFields["body"] = fmt.Sprintf("%v\n\n", string(bodyData))
 		} else {
@@ -163,12 +176,13 @@ func (s *Snooper) logResponse(ctx *proxyCallContext, req *http.Request, rsp *htt
 	s.logger.WithFields(logFields).Infof("RESPONSE #%v: %v %v", ctx.callIndex, req.Method, req.URL.String())
 }
 
-func (s *Snooper) logEventResponse(ctx *proxyCallContext, req *http.Request, rsp *http.Response, body []byte) {
+func (s *Snooper) logEventResponse(req *http.Request, rsp *http.Response, body []byte) {
 	logFields := logrus.Fields{
 		"color": color.FgGreen,
 	}
 
 	evt := map[string]any{}
+
 	for _, line := range strings.Split(string(body), "\n") {
 		line = strings.Trim(line, "\r\n ")
 		if line == "" {
@@ -183,6 +197,7 @@ func (s *Snooper) logEventResponse(ctx *proxyCallContext, req *http.Request, rsp
 		switch line[0:sep] {
 		case "data":
 			data := map[string]any{}
+
 			err := json.Unmarshal([]byte(line[sep+1:]), &data)
 			if err != nil {
 				s.logger.Warnf("failed parsing event data: %v", err)
@@ -195,12 +210,13 @@ func (s *Snooper) logEventResponse(ctx *proxyCallContext, req *http.Request, rsp
 	}
 
 	logFields["body"] = body
+
 	if len(evt) >= 2 {
-		bodyJson, err := json.Marshal(evt)
+		bodyJSON, err := json.Marshal(evt)
 		if err != nil {
 			s.logger.Warnf("failed parsing event data: %v", err)
 		} else {
-			logFields["body"] = fmt.Sprintf("%v\n\n", string(s.beautifyJson(bodyJson)))
+			logFields["body"] = fmt.Sprintf("%v\n\n", string(s.beautifyJSON(bodyJSON)))
 		}
 	}
 
