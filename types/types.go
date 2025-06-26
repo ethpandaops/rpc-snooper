@@ -71,6 +71,6 @@ func (f *Filter) SetCompiled(compiled interface{}) {
 type ProxyCallContext interface {
 	Context() context.Context
 	ID() uint64
-	SetData(key string, value interface{})
-	GetData(key string) interface{}
+	SetData(moduleId uint64, key string, value interface{})
+	GetData(moduleId uint64, key string) interface{}
 }

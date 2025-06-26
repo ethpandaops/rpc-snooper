@@ -74,12 +74,12 @@ func (callContext *ProxyCallContext) ID() uint64 {
 	return callContext.callIndex
 }
 
-func (callContext *ProxyCallContext) SetData(key string, value interface{}) {
-	callContext.data[key] = value
+func (callContext *ProxyCallContext) SetData(moduleId uint64, key string, value interface{}) {
+	callContext.data[fmt.Sprintf("%d:%s", moduleId, key)] = value
 }
 
-func (callContext *ProxyCallContext) GetData(key string) interface{} {
-	return callContext.data[key]
+func (callContext *ProxyCallContext) GetData(moduleId uint64, key string) interface{} {
+	return callContext.data[fmt.Sprintf("%d:%s", moduleId, key)]
 }
 
 func (s *Snooper) processProxyCall(w http.ResponseWriter, r *http.Request) error {

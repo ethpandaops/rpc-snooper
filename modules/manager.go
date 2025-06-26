@@ -158,13 +158,16 @@ func (cm *ConnectionManager) SendMessage(msg *protocol.WSMessage) error {
 	cm.writeMu.Lock()
 	defer cm.writeMu.Unlock()
 
-	json, err := json.Marshal(msg)
-	if err != nil {
-		return fmt.Errorf("failed to marshal message: %w", err)
-	}
+	/*
+		json, err := json.Marshal(msg)
+		if err != nil {
+			return fmt.Errorf("failed to marshal message: %w", err)
+		}
 
-	fmt.Println(string(json))
-	return cm.conn.WriteMessage(websocket.TextMessage, json)
+		fmt.Println(string(json))
+		return cm.conn.WriteMessage(websocket.TextMessage, json)
+	*/
+	return cm.conn.WriteJSON(msg)
 }
 
 func (cm *ConnectionManager) SendMessageWithBinary(msg *protocol.WSMessage, binaryData []byte) error {
@@ -221,13 +224,22 @@ func (mm *ModuleManager) shouldProcessRequest(module types.Module, ctx *types.Re
 		return true
 	}
 
-	return filterEngine.ShouldProcessRequestFilter(filterConfig.RequestFilter, ctx)
+	shouldProcess := filterEngine.ShouldProcessRequestFilter(filterConfig.RequestFilter, ctx)
+	if !shouldProcess {
+		ctx.CallCtx.SetData(module.ID(), "skip_response", true)
+	}
+
+	return shouldProcess
 }
 
 func (mm *ModuleManager) shouldProcessResponse(module types.Module, ctx *types.ResponseContext, filterEngine *FilterEngine) bool {
 	// Check if module explicitly requested this response
-	if ctx.CallCtx.GetData("wants_response") == true {
+	if ctx.CallCtx.GetData(module.ID(), "wants_response") == true {
 		return true
+	}
+
+	if ctx.CallCtx.GetData(module.ID(), "skip_response") == true {
+		return false
 	}
 
 	mm.mu.RLock()
@@ -391,7 +403,7 @@ func (m *Manager) handleConnection(connMgr *ConnectionManager) {
 			}
 		case websocket.BinaryMessage:
 			if expectingBinary && lastJSONMessage != nil {
-				m.handleBinaryMessage(connMgr, lastJSONMessage, data)
+				m.handleJSONMessage(connMgr, lastJSONMessage, data)
 				expectingBinary = false
 				lastJSONMessage = nil
 			} else {
@@ -402,25 +414,11 @@ func (m *Manager) handleConnection(connMgr *ConnectionManager) {
 }
 
 func (m *Manager) handleJSONMessage(connMgr *ConnectionManager, msg *protocol.WSMessage, binaryData []byte) {
-	m.logger.WithField("data", msg.Method).Info("Received JSON message")
-
 	if msg.ResponseID != 0 {
 		m.handleResponse(connMgr, msg, binaryData)
 	} else {
 		m.handleRequest(connMgr, msg, binaryData)
 	}
-}
-
-func (m *Manager) handleBinaryMessage(connMgr *ConnectionManager, jsonMsg *protocol.WSMessage, binaryData []byte) {
-	m.logger.WithFields(logrus.Fields{
-		"method":      jsonMsg.Method,
-		"request_id":  jsonMsg.RequestID,
-		"response_id": jsonMsg.ResponseID,
-		"binary_size": len(binaryData),
-	}).Info("Received binary message")
-
-	// Handle binary message based on the JSON message context
-	// This is where you would process the binary data according to your application logic
 }
 
 func (m *Manager) handleResponse(connMgr *ConnectionManager, msg *protocol.WSMessage, binaryData []byte) {

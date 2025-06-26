@@ -25,14 +25,14 @@ func (rt *ResponseTracer) ID() uint64 {
 }
 
 func (rt *ResponseTracer) OnRequest(ctx *types.RequestContext) (*types.RequestContext, error) {
-	ctx.CallCtx.SetData("wants_response", true)
-	ctx.CallCtx.SetData("request_size", len(ctx.BodyBytes))
+	ctx.CallCtx.SetData(rt.Id, "wants_response", true)
+	ctx.CallCtx.SetData(rt.Id, "request_size", len(ctx.BodyBytes))
 
 	// Extract request data if query is configured
 	if rt.requestQuery != nil && strings.Contains(ctx.ContentType, "json") {
 		requestData := rt.extractData(rt.requestQuery, ctx.Body)
 		if requestData != nil {
-			ctx.CallCtx.SetData("request_extracted_data", requestData)
+			ctx.CallCtx.SetData(rt.Id, "request_extracted_data", requestData)
 		}
 	}
 
@@ -41,7 +41,7 @@ func (rt *ResponseTracer) OnRequest(ctx *types.RequestContext) (*types.RequestCo
 
 func (rt *ResponseTracer) OnResponse(ctx *types.ResponseContext) (*types.ResponseContext, error) {
 	duration := ctx.Duration
-	requestSize, _ := ctx.CallCtx.GetData("request_size").(int)
+	requestSize, _ := ctx.CallCtx.GetData(rt.Id, "request_size").(int)
 
 	// Extract response data if query is configured
 	var responseData interface{}
@@ -50,7 +50,7 @@ func (rt *ResponseTracer) OnResponse(ctx *types.ResponseContext) (*types.Respons
 	}
 
 	// Get previously extracted request data
-	requestData := ctx.CallCtx.GetData("request_extracted_data")
+	requestData := ctx.CallCtx.GetData(rt.Id, "request_extracted_data")
 
 	tracerEvent := &protocol.TracerEvent{
 		ModuleID:     rt.Id,

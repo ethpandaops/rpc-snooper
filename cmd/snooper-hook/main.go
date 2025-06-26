@@ -285,7 +285,7 @@ func (c *TestClient) handleMessages() {
 
 		switch messageType {
 		case websocket.TextMessage:
-			fmt.Println(string(data))
+			//fmt.Println(string(data))
 
 			var msg protocol.WSMessage
 			if err := json.Unmarshal(data, &msg); err != nil {
@@ -319,8 +319,6 @@ func (c *TestClient) handleMessages() {
 }
 
 func (c *TestClient) handleJSONMessage(msg *protocol.WSMessageWithBinary) {
-	c.logger.WithField("data", msg.Method).Info("Received JSON message")
-
 	c.logger.WithFields(logrus.Fields{
 		"method":      msg.Method,
 		"request_id":  msg.RequestID,
@@ -364,7 +362,7 @@ func (c *TestClient) handleHookEvent(msg *protocol.WSMessageWithBinary) {
 	}
 
 	hookType, _ := hookData["hook_type"].(string)
-	requestIDStr, _ := hookData["request_id"].(string)
+	requestIDStr, _ := hookData["request_id"].(float64)
 	contentType, _ := hookData["content_type"].(string)
 
 	c.logger.WithFields(logrus.Fields{
@@ -405,7 +403,7 @@ func (c *TestClient) handleTracerEvent(msg *protocol.WSMessageWithBinary) {
 		return
 	}
 
-	requestID, _ := tracerData["request_id"].(string)
+	requestID, _ := tracerData["request_id"].(float64)
 	duration, _ := tracerData["duration_ms"].(float64)
 	statusCode, _ := tracerData["status_code"].(float64)
 	requestSize, _ := tracerData["request_size"].(float64)

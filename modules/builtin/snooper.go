@@ -61,7 +61,7 @@ func (rs *ResponseSnooper) ID() uint64 {
 }
 
 func (rs *ResponseSnooper) OnRequest(ctx *types.RequestContext) (*types.RequestContext, error) {
-	ctx.CallCtx.SetData("wants_response", true)
+	ctx.CallCtx.SetData(rs.Id, "wants_response", true)
 	return ctx, nil
 }
 
