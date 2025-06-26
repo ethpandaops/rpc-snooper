@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ethpandaops/rpc-snooper/modules"
 	"github.com/gorilla/mux"
 	"github.com/sirupsen/logrus"
 	"github.com/urfave/negroni"
@@ -16,9 +17,10 @@ import (
 type Snooper struct {
 	CallTimeout time.Duration
 
-	target *url.URL
-	logger logrus.FieldLogger
-	api    *API
+	target        *url.URL
+	logger        logrus.FieldLogger
+	api           *API
+	moduleManager *modules.Manager
 
 	callIndexCounter uint64
 	callIndexMutex   sync.Mutex
@@ -33,8 +35,9 @@ func NewSnooper(target string, logger logrus.FieldLogger) (*Snooper, error) {
 	return &Snooper{
 		CallTimeout: 60 * time.Second,
 
-		target: targetURL,
-		logger: logger,
+		target:        targetURL,
+		logger:        logger,
+		moduleManager: modules.NewManager(logger),
 	}, nil
 }
 
@@ -43,7 +46,8 @@ func (s *Snooper) StartServer(host string, port int, noAPI bool) error {
 
 	if !noAPI {
 		s.api = newAPI(s)
-		s.api.initRouter(router.PathPrefix("/_snooper/").Subrouter())
+		apiRouter := router.PathPrefix("/_snooper/").Subrouter()
+		s.api.initRouter(apiRouter)
 	}
 
 	router.PathPrefix("/").Handler(s)

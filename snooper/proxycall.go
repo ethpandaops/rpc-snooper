@@ -95,10 +95,8 @@ func (s *Snooper) processProxyCall(w http.ResponseWriter, r *http.Request) error
 		return fmt.Errorf("error parsing proxy url: %w", err)
 	}
 
-	// stream body
-	bodyReader := s.createTeeLogStream(r.Body, func(reader io.ReadCloser) {
-		s.logRequest(callContext, r, reader)
-	})
+	// Create body reader with module processing and logging
+	bodyReader := s.createRequestProcessingStream(callContext, r, r.Body)
 	defer bodyReader.Close()
 
 	// construct request to send to origin server
@@ -128,20 +126,18 @@ func (s *Snooper) processProxyCall(w http.ResponseWriter, r *http.Request) error
 	respContentType := resp.Header.Get("Content-Type")
 	isEventStream := respContentType == "text/event-stream" || strings.HasPrefix(r.URL.EscapedPath(), "/eth/v1/events")
 
-	// passthru response headers
-	respH := w.Header()
-
-	for hk, hvs := range resp.Header {
-		for _, hv := range hvs {
-			respH.Add(hk, hv)
-		}
-	}
-
+	// For event streams, we can't modify the response through modules (streaming requirement)
 	if isEventStream {
+		// passthru response headers
+		respH := w.Header()
+		for hk, hvs := range resp.Header {
+			for _, hv := range hvs {
+				respH.Add(hk, hv)
+			}
+		}
 		respH.Set("X-Accel-Buffering", "no")
+		w.WriteHeader(resp.StatusCode)
 	}
-
-	w.WriteHeader(resp.StatusCode)
 
 	if isEventStream && resp.StatusCode == 200 {
 		callContext.updateChan <- s.CallTimeout
@@ -155,13 +151,20 @@ func (s *Snooper) processProxyCall(w http.ResponseWriter, r *http.Request) error
 			s.logger.WithField("callidx", callContext.callIndex).Warnf("event stream error: %v", err)
 		}
 	} else {
-		// stream response body
-		bodyReader := s.createTeeLogStream(resp.Body, func(reader io.ReadCloser) {
-			s.logResponse(callContext, r, resp, reader)
-		})
-		defer bodyReader.Close()
+		// passthru response headers (modules may modify them during streaming)
+		respH := w.Header()
+		for hk, hvs := range resp.Header {
+			for _, hv := range hvs {
+				respH.Add(hk, hv)
+			}
+		}
+		w.WriteHeader(resp.StatusCode)
 
-		_, err = io.Copy(w, bodyReader)
+		// Create response body reader with module processing and logging
+		responseBodyReader := s.createResponseProcessingStream(callContext, r, resp)
+		defer responseBodyReader.Close()
+
+		_, err = io.Copy(w, responseBodyReader)
 		if err != nil {
 			return fmt.Errorf("proxy response stream error: %w", err)
 		}
@@ -212,4 +215,24 @@ func (s *Snooper) processEventStreamResponse(callContext *proxyCallContext, r *h
 
 		callContext.updateChan <- s.CallTimeout
 	}
+}
+
+// createRequestProcessingStream creates a streaming reader that processes request data through logging
+func (s *Snooper) createRequestProcessingStream(callCtx *proxyCallContext, r *http.Request, stream io.ReadCloser) io.ReadCloser {
+	// Create tee stream for logging (module processing now happens in log stream)
+	loggedStream := s.createTeeLogStream(stream, func(reader io.ReadCloser) {
+		s.logRequest(callCtx, r, reader)
+	})
+
+	return loggedStream
+}
+
+// createResponseProcessingStream creates a streaming reader for response processing
+func (s *Snooper) createResponseProcessingStream(callCtx *proxyCallContext, r *http.Request, resp *http.Response) io.ReadCloser {
+	// Create tee stream for logging (module processing now happens in log stream)
+	loggedStream := s.createTeeLogStream(resp.Body, func(reader io.ReadCloser) {
+		s.logResponse(callCtx, r, resp, reader)
+	})
+
+	return loggedStream
 }
