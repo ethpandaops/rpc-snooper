@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/ethpandaops/rpc-snooper/modules/types"
+	"github.com/ethpandaops/rpc-snooper/types"
 	"github.com/itchyny/gojq"
 	"github.com/sirupsen/logrus"
 )
@@ -19,8 +19,8 @@ func NewFilterEngine(logger logrus.FieldLogger) *FilterEngine {
 	}
 }
 
-// CompileFilter compiles the JSON query in a filter configuration
-func (fe *FilterEngine) CompileFilter(filter *types.FilterConfig) error {
+// CompileFilter compiles the JSON query in a filter
+func (fe *FilterEngine) CompileFilter(filter *types.Filter) error {
 	if filter.JSONQuery == "" {
 		return nil
 	}
@@ -30,14 +30,14 @@ func (fe *FilterEngine) CompileFilter(filter *types.FilterConfig) error {
 		return err
 	}
 
-	// Store the compiled query in the filter config
+	// Store the compiled query in the filter
 	// We use interface{} to avoid import cycles
 	filter.SetCompiled(query)
 	return nil
 }
 
-// ShouldProcessRequest determines if a request should be processed by a module based on filters
-func (fe *FilterEngine) ShouldProcessRequest(filter *types.FilterConfig, ctx *types.RequestContext) bool {
+// ShouldProcessRequestFilter determines if a request should be processed based on a request filter
+func (fe *FilterEngine) ShouldProcessRequestFilter(filter *types.Filter, ctx *types.RequestContext) bool {
 	if filter == nil {
 		return true
 	}
@@ -72,14 +72,22 @@ func (fe *FilterEngine) ShouldProcessRequest(filter *types.FilterConfig, ctx *ty
 
 	// Check JSON query filter
 	if filter.JSONQuery != "" && strings.Contains(ctx.ContentType, "json") {
-		return fe.evaluateJSONQuery(filter, ctx.Body)
+		return fe.evaluateJSONQueryFilter(filter, ctx.Body)
 	}
 
 	return true
 }
 
-// ShouldProcessResponse determines if a response should be processed by a module based on filters
-func (fe *FilterEngine) ShouldProcessResponse(filter *types.FilterConfig, ctx *types.ResponseContext) bool {
+// ShouldProcessRequest determines if a request should be processed by a module based on filters (legacy method)
+func (fe *FilterEngine) ShouldProcessRequest(filter *types.FilterConfig, ctx *types.RequestContext) bool {
+	if filter == nil || filter.RequestFilter == nil {
+		return true
+	}
+	return fe.ShouldProcessRequestFilter(filter.RequestFilter, ctx)
+}
+
+// ShouldProcessResponseFilter determines if a response should be processed based on a response filter
+func (fe *FilterEngine) ShouldProcessResponseFilter(filter *types.Filter, ctx *types.ResponseContext) bool {
 	if filter == nil {
 		return true
 	}
@@ -114,14 +122,22 @@ func (fe *FilterEngine) ShouldProcessResponse(filter *types.FilterConfig, ctx *t
 
 	// Check JSON query filter
 	if filter.JSONQuery != "" && strings.Contains(ctx.ContentType, "json") {
-		return fe.evaluateJSONQuery(filter, ctx.Body)
+		return fe.evaluateJSONQueryFilter(filter, ctx.Body)
 	}
 
 	return true
 }
 
-// evaluateJSONQuery evaluates a gojq query against the provided data
-func (fe *FilterEngine) evaluateJSONQuery(filter *types.FilterConfig, body interface{}) bool {
+// ShouldProcessResponse determines if a response should be processed by a module based on filters (legacy method)
+func (fe *FilterEngine) ShouldProcessResponse(filter *types.FilterConfig, ctx *types.ResponseContext) bool {
+	if filter == nil || filter.ResponseFilter == nil {
+		return true
+	}
+	return fe.ShouldProcessResponseFilter(filter.ResponseFilter, ctx)
+}
+
+// evaluateJSONQueryFilter evaluates a gojq query against the provided data
+func (fe *FilterEngine) evaluateJSONQueryFilter(filter *types.Filter, body interface{}) bool {
 	compiled := filter.GetCompiled()
 	if compiled == nil {
 		fe.logger.Warn("JSON query not compiled, skipping filter")
@@ -174,4 +190,3 @@ func (fe *FilterEngine) evaluateJSONQuery(filter *types.FilterConfig, body inter
 
 	return false
 }
-

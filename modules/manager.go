@@ -11,7 +11,7 @@ import (
 
 	"github.com/ethpandaops/rpc-snooper/modules/builtin"
 	"github.com/ethpandaops/rpc-snooper/modules/protocol"
-	"github.com/ethpandaops/rpc-snooper/modules/types"
+	"github.com/ethpandaops/rpc-snooper/types"
 	"github.com/gorilla/websocket"
 	"github.com/sirupsen/logrus"
 )
@@ -29,7 +29,7 @@ type ModuleManager struct {
 type ConnectionManager struct {
 	conn            *websocket.Conn
 	manager         *ModuleManager
-	pendingRequests map[uint64]chan *protocol.WSMessage
+	pendingRequests map[uint64]chan *protocol.WSMessageWithBinary
 	modules         []uint64
 	mu              sync.RWMutex
 	done            chan struct{}
@@ -122,8 +122,8 @@ func (m *Manager) ProcessResponse(ctx *types.ResponseContext) (*types.ResponseCo
 	return ctx, nil
 }
 
-func (cm *ConnectionManager) WaitForResponse(requestID uint64) (*protocol.WSMessage, error) {
-	responseChan := make(chan *protocol.WSMessage, 1)
+func (cm *ConnectionManager) WaitForResponse(requestID uint64) (*protocol.WSMessageWithBinary, error) {
+	responseChan := make(chan *protocol.WSMessageWithBinary, 1)
 	cm.RegisterPendingRequest(requestID, responseChan)
 	defer cm.UnregisterPendingRequest(requestID)
 
@@ -139,11 +139,11 @@ func (cm *ConnectionManager) GenerateRequestID() uint64 {
 	return atomic.AddUint64(&cm.manager.requestCounter, 1)
 }
 
-func (cm *ConnectionManager) RegisterPendingRequest(requestID uint64, responseChan chan *protocol.WSMessage) {
+func (cm *ConnectionManager) RegisterPendingRequest(requestID uint64, responseChan chan *protocol.WSMessageWithBinary) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 	if cm.pendingRequests == nil {
-		cm.pendingRequests = make(map[uint64]chan *protocol.WSMessage)
+		cm.pendingRequests = make(map[uint64]chan *protocol.WSMessageWithBinary)
 	}
 	cm.pendingRequests[requestID] = responseChan
 }
@@ -157,7 +157,30 @@ func (cm *ConnectionManager) UnregisterPendingRequest(requestID uint64) {
 func (cm *ConnectionManager) SendMessage(msg *protocol.WSMessage) error {
 	cm.writeMu.Lock()
 	defer cm.writeMu.Unlock()
-	return cm.conn.WriteJSON(msg)
+
+	json, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal message: %w", err)
+	}
+
+	fmt.Println(string(json))
+	return cm.conn.WriteMessage(websocket.TextMessage, json)
+}
+
+func (cm *ConnectionManager) SendMessageWithBinary(msg *protocol.WSMessage, binaryData []byte) error {
+	cm.writeMu.Lock()
+	defer cm.writeMu.Unlock()
+
+	// Set the Binary flag
+	msg.Binary = true
+
+	// Send the JSON message first
+	if err := cm.conn.WriteJSON(msg); err != nil {
+		return err
+	}
+
+	// Send the binary frame immediately after
+	return cm.conn.WriteMessage(websocket.BinaryMessage, binaryData)
 }
 
 func (cm *ConnectionManager) Close() {
@@ -172,6 +195,7 @@ func (cm *ConnectionManager) Close() {
 }
 
 // ModuleManager methods
+
 func (mm *ModuleManager) GenerateModuleID() uint64 {
 	return atomic.AddUint64(&mm.moduleCounter, 1)
 }
@@ -188,82 +212,33 @@ func (mm *ModuleManager) SetEnabled(enabled bool) {
 	mm.enabled = enabled
 }
 
-func (mm *ModuleManager) ProcessRequest(ctx *types.RequestContext) (*types.RequestContext, error) {
-	if !mm.IsEnabled() {
-		return ctx, nil
-	}
-
-	mm.mu.RLock()
-	modules := make([]types.Module, 0, len(mm.modules))
-	for _, module := range mm.modules {
-		modules = append(modules, module)
-	}
-	mm.mu.RUnlock()
-
-	for _, module := range modules {
-		if mm.shouldProcessRequest(module, ctx, nil) { // TODO: Pass filterEngine from Manager
-			newCtx, err := module.OnRequest(ctx)
-			if err != nil {
-				return ctx, err
-			}
-			if newCtx != nil {
-				ctx = newCtx
-			}
-		}
-	}
-
-	return ctx, nil
-}
-
-func (mm *ModuleManager) ProcessResponse(ctx *types.ResponseContext) (*types.ResponseContext, error) {
-	if !mm.IsEnabled() {
-		return ctx, nil
-	}
-
-	mm.mu.RLock()
-	modules := make([]types.Module, 0, len(mm.modules))
-	for _, module := range mm.modules {
-		modules = append(modules, module)
-	}
-	mm.mu.RUnlock()
-
-	for _, module := range modules {
-		if mm.shouldProcessResponse(module, ctx, nil) { // TODO: Pass filterEngine from Manager
-			newCtx, err := module.OnResponse(ctx)
-			if err != nil {
-				return ctx, err
-			}
-			if newCtx != nil {
-				ctx = newCtx
-			}
-		}
-	}
-
-	return ctx, nil
-}
-
 func (mm *ModuleManager) shouldProcessRequest(module types.Module, ctx *types.RequestContext, filterEngine *FilterEngine) bool {
 	mm.mu.RLock()
-	filter, exists := mm.filters[module.ID()]
+	filterConfig, exists := mm.filters[module.ID()]
 	mm.mu.RUnlock()
 
-	if !exists {
+	if !exists || filterConfig.RequestFilter == nil {
 		return true
 	}
 
-	return filterEngine.ShouldProcessRequest(filter, ctx)
+	return filterEngine.ShouldProcessRequestFilter(filterConfig.RequestFilter, ctx)
 }
 
 func (mm *ModuleManager) shouldProcessResponse(module types.Module, ctx *types.ResponseContext, filterEngine *FilterEngine) bool {
-	mm.mu.RLock()
-	filter, exists := mm.filters[module.ID()]
-	mm.mu.RUnlock()
-
-	if !exists {
+	// Check if module explicitly requested this response
+	if ctx.CallCtx.GetData("wants_response") == true {
 		return true
 	}
 
-	return filterEngine.ShouldProcessResponse(filter, ctx)
+	mm.mu.RLock()
+	filterConfig, exists := mm.filters[module.ID()]
+	mm.mu.RUnlock()
+
+	if !exists || filterConfig.ResponseFilter == nil {
+		return true
+	}
+
+	return filterEngine.ShouldProcessResponseFilter(filterConfig.ResponseFilter, ctx)
 }
 
 func (mm *ModuleManager) RegisterModule(module types.Module, filter *types.FilterConfig) error {
@@ -292,7 +267,23 @@ func (mm *ModuleManager) UnregisterModule(moduleID uint64) error {
 }
 
 func (mm *ModuleManager) parseFilterConfig(config map[string]interface{}) *types.FilterConfig {
-	filter := &types.FilterConfig{}
+	filterConfig := &types.FilterConfig{}
+
+	// Parse request filter
+	if requestFilterData, ok := config["request_filter"].(map[string]interface{}); ok {
+		filterConfig.RequestFilter = mm.parseFilter(requestFilterData)
+	}
+
+	// Parse response filter
+	if responseFilterData, ok := config["response_filter"].(map[string]interface{}); ok {
+		filterConfig.ResponseFilter = mm.parseFilter(responseFilterData)
+	}
+
+	return filterConfig
+}
+
+func (mm *ModuleManager) parseFilter(config map[string]interface{}) *types.Filter {
+	filter := &types.Filter{}
 
 	if contentTypes, ok := config["content_types"].([]interface{}); ok {
 		filter.ContentTypes = make([]string, len(contentTypes))
@@ -338,7 +329,7 @@ func (m *Manager) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	connMgr := &ConnectionManager{
 		conn:            conn,
 		manager:         m.ModuleManager,
-		pendingRequests: make(map[uint64]chan *protocol.WSMessage),
+		pendingRequests: make(map[uint64]chan *protocol.WSMessageWithBinary),
 		modules:         make([]uint64, 0),
 		done:            make(chan struct{}),
 	}
@@ -363,17 +354,17 @@ func (m *Manager) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	go m.handleConnection(connMgr)
 
-	select {
-	case <-connMgr.done:
-		m.logger.WithField("remote", conn.RemoteAddr()).Info("WebSocket connection closed")
-	}
+	<-connMgr.done
+	m.logger.WithField("remote", conn.RemoteAddr()).Info("WebSocket connection closed")
 }
 
 func (m *Manager) handleConnection(connMgr *ConnectionManager) {
 	defer connMgr.Close()
 
-	for {
+	var expectingBinary bool
+	var lastJSONMessage *protocol.WSMessage
 
+	for {
 		messageType, data, err := connMgr.conn.ReadMessage()
 		if err != nil {
 			if websocket.IsCloseError(err, websocket.CloseGoingAway, websocket.CloseNormalClosure) {
@@ -381,49 +372,74 @@ func (m *Manager) handleConnection(connMgr *ConnectionManager) {
 			} else {
 				m.logger.WithError(err).Error("WebSocket read error")
 			}
-
 			return
 		}
 
 		switch messageType {
 		case websocket.TextMessage:
-			m.handleJSONMessage(connMgr, data)
+			var msg protocol.WSMessage
+			if err := json.Unmarshal(data, &msg); err != nil {
+				m.logger.WithError(err).Debug("Failed to unmarshal JSON message")
+				return
+			}
+
+			if msg.Binary {
+				expectingBinary = true
+				lastJSONMessage = &msg
+			} else {
+				m.handleJSONMessage(connMgr, &msg, nil)
+			}
 		case websocket.BinaryMessage:
-			//m.handleBinaryMessage(data)
+			if expectingBinary && lastJSONMessage != nil {
+				m.handleBinaryMessage(connMgr, lastJSONMessage, data)
+				expectingBinary = false
+				lastJSONMessage = nil
+			} else {
+				m.logger.Warn("Received unexpected binary message")
+			}
 		}
 	}
 }
 
-func (m *Manager) handleJSONMessage(connMgr *ConnectionManager, data []byte) {
-	m.logger.WithField("data", string(data)).Info("Received JSON message")
-
-	var msg protocol.WSMessage
-	if err := json.Unmarshal(data, &msg); err != nil {
-		m.logger.WithError(err).Debug("Failed to unmarshal JSON message")
-		return
-	}
+func (m *Manager) handleJSONMessage(connMgr *ConnectionManager, msg *protocol.WSMessage, binaryData []byte) {
+	m.logger.WithField("data", msg.Method).Info("Received JSON message")
 
 	if msg.ResponseID != 0 {
-		m.handleResponse(connMgr, &msg)
+		m.handleResponse(connMgr, msg, binaryData)
 	} else {
-		m.handleRequest(connMgr, &msg)
+		m.handleRequest(connMgr, msg, binaryData)
 	}
 }
 
-func (m *Manager) handleResponse(connMgr *ConnectionManager, msg *protocol.WSMessage) {
+func (m *Manager) handleBinaryMessage(connMgr *ConnectionManager, jsonMsg *protocol.WSMessage, binaryData []byte) {
+	m.logger.WithFields(logrus.Fields{
+		"method":      jsonMsg.Method,
+		"request_id":  jsonMsg.RequestID,
+		"response_id": jsonMsg.ResponseID,
+		"binary_size": len(binaryData),
+	}).Info("Received binary message")
+
+	// Handle binary message based on the JSON message context
+	// This is where you would process the binary data according to your application logic
+}
+
+func (m *Manager) handleResponse(connMgr *ConnectionManager, msg *protocol.WSMessage, binaryData []byte) {
 	connMgr.mu.RLock()
 	responseChan, exists := connMgr.pendingRequests[msg.ResponseID]
 	connMgr.mu.RUnlock()
 
 	if exists {
 		select {
-		case responseChan <- msg:
+		case responseChan <- &protocol.WSMessageWithBinary{
+			WSMessage:  msg,
+			BinaryData: binaryData,
+		}:
 		default:
 		}
 	}
 }
 
-func (m *Manager) handleRequest(connMgr *ConnectionManager, msg *protocol.WSMessage) {
+func (m *Manager) handleRequest(connMgr *ConnectionManager, msg *protocol.WSMessage, binaryData []byte) {
 	switch msg.Method {
 	case "register_module":
 		m.handleModuleRegistration(connMgr, msg)
@@ -465,17 +481,27 @@ func (m *Manager) handleModuleRegistration(connMgr *ConnectionManager, msg *prot
 		return
 	}
 
-	filter := m.ModuleManager.parseFilterConfig(req.Config)
+	filterConfig := m.ModuleManager.parseFilterConfig(req.Config)
 
-	// Compile the filter if it has a JSON query
-	if filter != nil && filter.JSONQuery != "" {
-		if err := m.filterEngine.CompileFilter(filter); err != nil {
-			m.sendErrorResponse(connMgr, msg, fmt.Sprintf("Failed to compile filter: %v", err))
-			return
+	// Compile the filters if they have JSON queries
+	if filterConfig != nil {
+		if filterConfig.RequestFilter != nil && filterConfig.RequestFilter.JSONQuery != "" {
+			if err := m.filterEngine.CompileFilter(filterConfig.RequestFilter); err != nil {
+				m.sendErrorResponse(connMgr, msg, fmt.Sprintf("Failed to compile request filter: %v", err))
+				return
+			}
+		}
+		if filterConfig.ResponseFilter != nil && filterConfig.ResponseFilter.JSONQuery != "" {
+			if err := m.filterEngine.CompileFilter(filterConfig.ResponseFilter); err != nil {
+				m.sendErrorResponse(connMgr, msg, fmt.Sprintf("Failed to compile response filter: %v", err))
+				return
+			}
 		}
 	}
 
-	if err := m.RegisterModule(module, filter); err != nil {
+	module.Configure(req.Config)
+
+	if err := m.RegisterModule(module, filterConfig); err != nil {
 		m.sendErrorResponse(connMgr, msg, fmt.Sprintf("Failed to register module: %v", err))
 		return
 	}

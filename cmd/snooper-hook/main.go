@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/binary"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -39,7 +38,7 @@ type TestClient struct {
 
 	// Centralized request/response handling
 	requestCounter  uint64
-	pendingRequests map[uint64]chan *protocol.WSMessage
+	pendingRequests map[uint64]chan *protocol.WSMessageWithBinary
 	requestMu       sync.RWMutex
 
 	// Module state
@@ -66,7 +65,7 @@ func main() {
 		config:          config,
 		ctx:             ctx,
 		cancel:          cancel,
-		pendingRequests: make(map[uint64]chan *protocol.WSMessage),
+		pendingRequests: make(map[uint64]chan *protocol.WSMessageWithBinary),
 		binaryReaders:   make(map[uint64]io.ReadCloser),
 	}
 
@@ -94,8 +93,17 @@ func main() {
 		"module_id":   client.moduleID,
 	}).Info("Module registered successfully, listening for hooks...")
 
-	client.wg.Wait()
-	logger.Info("Test client shutdown complete")
+	// Wait for graceful shutdown with timeout
+	shutdownDone := make(chan struct{})
+	go func() {
+		client.wg.Wait()
+		close(shutdownDone)
+	}()
+
+	select {
+	case <-shutdownDone:
+		logger.Info("Test client shutdown complete")
+	}
 }
 
 func parseFlags() *Config {
@@ -104,7 +112,7 @@ func parseFlags() *Config {
 	}
 
 	flag.StringVar(&config.URL, "url", "ws://localhost:8080/_snooper/control", "WebSocket URL of the snooper control endpoint")
-	flag.StringVar(&config.ModuleType, "type", "request_snooper", "Module type (request_snooper, response_snooper, counter, tracer)")
+	flag.StringVar(&config.ModuleType, "type", "request_snooper", "Module type (request_snooper, response_snooper, request_counter, response_tracer)")
 	flag.StringVar(&config.ModuleName, "name", "test-hook", "Module name")
 	flag.BoolVar(&config.Verbose, "verbose", false, "Enable verbose logging")
 
@@ -121,7 +129,7 @@ func parseFlags() *Config {
 
 	// Validate module type
 	validTypes := []string{
-		"request_snooper", "response_snooper", "counter", "tracer",
+		"request_snooper", "response_snooper", "request_counter", "response_tracer",
 	}
 
 	valid := false
@@ -163,7 +171,7 @@ func (c *TestClient) Connect() error {
 }
 
 // Centralized request/response system
-func (c *TestClient) sendRequest(method string, data interface{}) (*protocol.WSMessage, error) {
+func (c *TestClient) sendRequest(method string, data interface{}, binaryData []byte) (*protocol.WSMessageWithBinary, error) {
 	requestID := atomic.AddUint64(&c.requestCounter, 1)
 
 	msg := protocol.WSMessage{
@@ -171,10 +179,11 @@ func (c *TestClient) sendRequest(method string, data interface{}) (*protocol.WSM
 		Method:    method,
 		Data:      data,
 		Timestamp: time.Now().UnixNano(),
+		Binary:    binaryData != nil,
 	}
 
 	// Register pending request BEFORE sending
-	responseChan := make(chan *protocol.WSMessage, 1)
+	responseChan := make(chan *protocol.WSMessageWithBinary, 1)
 	c.requestMu.Lock()
 	c.pendingRequests[requestID] = responseChan
 	c.requestMu.Unlock()
@@ -191,6 +200,12 @@ func (c *TestClient) sendRequest(method string, data interface{}) (*protocol.WSM
 		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
 
+	if binaryData != nil {
+		if err := c.conn.WriteMessage(websocket.BinaryMessage, binaryData); err != nil {
+			return nil, fmt.Errorf("failed to send binary message: %w", err)
+		}
+	}
+
 	// Wait for response with timeout
 	ctx, cancel := context.WithTimeout(c.ctx, 10*time.Second)
 	defer cancel()
@@ -199,6 +214,9 @@ func (c *TestClient) sendRequest(method string, data interface{}) (*protocol.WSM
 	case response := <-responseChan:
 		return response, nil
 	case <-ctx.Done():
+		if c.ctx.Err() != nil {
+			return nil, fmt.Errorf("context cancelled: %w", c.ctx.Err())
+		}
 		return nil, fmt.Errorf("request timeout")
 	}
 }
@@ -210,7 +228,7 @@ func (c *TestClient) RegisterModule() error {
 		Config: c.config.Config,
 	}
 
-	response, err := c.sendRequest("register_module", regReq)
+	response, err := c.sendRequest("register_module", regReq, nil)
 	if err != nil {
 		return err
 	}
@@ -237,45 +255,78 @@ func (c *TestClient) handleMessages() {
 	defer c.wg.Done()
 	defer c.conn.Close()
 
-	for {
-		select {
-		case <-c.ctx.Done():
-			return
-		default:
-		}
+	var expectingBinary bool
+	var lastJSONMessage *protocol.WSMessage
 
+	// Set read deadline based on context to handle cancellation properly
+	go func() {
+		<-c.ctx.Done()
+		// Force close the connection when context is cancelled
+		c.conn.Close()
+	}()
+
+	for {
 		messageType, data, err := c.conn.ReadMessage()
 		if err != nil {
-			if websocket.IsCloseError(err, websocket.CloseGoingAway, websocket.CloseNormalClosure) {
-				c.logger.Info("WebSocket connection closed")
-			} else {
-				c.logger.WithError(err).Error("WebSocket read error")
+			select {
+			case <-c.ctx.Done():
+				// Context was cancelled, this is expected
+				return
+			default:
+				if websocket.IsCloseError(err, websocket.CloseGoingAway, websocket.CloseNormalClosure) {
+					c.logger.Info("WebSocket connection closed")
+				} else if !strings.Contains(err.Error(), "use of closed network connection") {
+					c.logger.WithError(err).Error("WebSocket read error")
+				}
+				c.cancel()
+				return
 			}
-			c.cancel()
-			return
 		}
 
 		switch messageType {
 		case websocket.TextMessage:
-			c.handleJSONMessage(data)
+			fmt.Println(string(data))
+
+			var msg protocol.WSMessage
+			if err := json.Unmarshal(data, &msg); err != nil {
+				c.logger.WithError(err).Debug("Failed to unmarshal JSON message")
+				return
+			}
+
+			if msg.Binary {
+				expectingBinary = true
+				lastJSONMessage = &msg
+			} else {
+				c.handleJSONMessage(&protocol.WSMessageWithBinary{
+					WSMessage:  &msg,
+					BinaryData: nil,
+				})
+			}
 		case websocket.BinaryMessage:
-			c.handleBinaryMessage(data)
+			if expectingBinary && lastJSONMessage != nil {
+				msgWithBinary := &protocol.WSMessageWithBinary{
+					WSMessage:  lastJSONMessage,
+					BinaryData: data,
+				}
+				c.handleJSONMessage(msgWithBinary)
+				expectingBinary = false
+				lastJSONMessage = nil
+			} else {
+				c.logger.Warn("Received unexpected binary message")
+			}
 		}
 	}
 }
 
-func (c *TestClient) handleJSONMessage(data []byte) {
-	var msg protocol.WSMessage
-	if err := json.Unmarshal(data, &msg); err != nil {
-		c.logger.WithError(err).Debug("Failed to unmarshal JSON message")
-		return
-	}
+func (c *TestClient) handleJSONMessage(msg *protocol.WSMessageWithBinary) {
+	c.logger.WithField("data", msg.Method).Info("Received JSON message")
 
 	c.logger.WithFields(logrus.Fields{
 		"method":      msg.Method,
 		"request_id":  msg.RequestID,
 		"response_id": msg.ResponseID,
 		"module_id":   msg.ModuleID,
+		"binary":      msg.Binary,
 	}).Debug("Received JSON message")
 
 	if msg.ResponseID != 0 {
@@ -285,8 +336,8 @@ func (c *TestClient) handleJSONMessage(data []byte) {
 
 		if exists {
 			select {
-			case responseChan <- &msg:
-				return // Response delivered, we're done
+			case responseChan <- msg:
+				return
 			default:
 				c.logger.WithField("response_id", msg.ResponseID).Warn("Failed to deliver response")
 			}
@@ -294,57 +345,18 @@ func (c *TestClient) handleJSONMessage(data []byte) {
 	} else {
 		switch msg.Method {
 		case "hook_event":
-			c.handleHookEvent(&msg)
+			c.handleHookEvent(msg)
 		case "counter_event":
-			c.handleCounterEvent(&msg)
+			c.handleCounterEvent(msg)
 		case "tracer_event":
-			c.handleTracerEvent(&msg)
+			c.handleTracerEvent(msg)
 		default:
 			c.logger.WithField("method", msg.Method).Warn("Unknown message method")
 		}
 	}
 }
 
-func (c *TestClient) handleBinaryMessage(data []byte) {
-	if len(data) < 8 {
-		c.logger.Debug("Received invalid binary frame: too short")
-		return
-	}
-
-	// Extract binary stream ID from first 8 bytes (big endian)
-	binaryID := binary.BigEndian.Uint64(data[:8])
-	payload := data[8:]
-
-	c.logger.WithFields(logrus.Fields{
-		"binary_id":    binaryID,
-		"payload_size": len(payload),
-	}).Debug("Received binary frame")
-
-	if len(payload) == 0 {
-		c.logger.WithField("binary_id", binaryID).Info("Received EOF for binary stream")
-		c.binaryMu.Lock()
-		if reader, exists := c.binaryReaders[binaryID]; exists {
-			reader.Close()
-			delete(c.binaryReaders, binaryID)
-		}
-		c.binaryMu.Unlock()
-		return
-	}
-
-	// Log binary data (truncated for readability)
-	payloadPreview := payload
-	if len(payload) > 100 {
-		payloadPreview = payload[:100]
-	}
-
-	c.logger.WithFields(logrus.Fields{
-		"binary_id": binaryID,
-		"size":      len(payload),
-		"preview":   string(payloadPreview),
-	}).Info("Received binary data")
-}
-
-func (c *TestClient) handleHookEvent(msg *protocol.WSMessage) {
+func (c *TestClient) handleHookEvent(msg *protocol.WSMessageWithBinary) {
 	hookData, ok := msg.Data.(map[string]interface{})
 	if !ok {
 		c.logger.Debug("Invalid hook event data")
@@ -355,40 +367,22 @@ func (c *TestClient) handleHookEvent(msg *protocol.WSMessage) {
 	requestIDStr, _ := hookData["request_id"].(string)
 	contentType, _ := hookData["content_type"].(string)
 
-	// Extract the actual body data (now pre-parsed from log stream)
-	bodyData := hookData["data"]
-
-	// Log the parsed data structure
-	var bodyInfo string
-	switch v := bodyData.(type) {
-	case map[string]interface{}:
-		bodyInfo = fmt.Sprintf("JSON object with %d keys", len(v))
-	case []interface{}:
-		bodyInfo = fmt.Sprintf("JSON array with %d elements", len(v))
-	case string:
-		bodyInfo = fmt.Sprintf("String data (%d chars)", len(v))
-	case []byte:
-		bodyInfo = fmt.Sprintf("Binary data (%d bytes)", len(v))
-	default:
-		bodyInfo = fmt.Sprintf("Unknown data type: %T", v)
-	}
-
 	c.logger.WithFields(logrus.Fields{
 		"hook_type":    hookType,
 		"request_id":   requestIDStr,
 		"content_type": contentType,
-		"body_info":    bodyInfo,
 	}).Info("Hook event received")
 
 	// For JSON data, pretty print it
-	if jsonData, ok := bodyData.(map[string]interface{}); ok {
+	var jsonData map[string]interface{}
+	if err := json.Unmarshal(msg.BinaryData, &jsonData); err == nil {
 		if prettyJSON, err := json.MarshalIndent(jsonData, "", "  "); err == nil {
 			c.logger.WithField("request_id", requestIDStr).Infof("JSON Data:\n%s", string(prettyJSON))
 		}
 	}
 }
 
-func (c *TestClient) handleCounterEvent(msg *protocol.WSMessage) {
+func (c *TestClient) handleCounterEvent(msg *protocol.WSMessageWithBinary) {
 	counterData, ok := msg.Data.(map[string]interface{})
 	if !ok {
 		c.logger.Debug("Invalid counter event data")
@@ -404,7 +398,7 @@ func (c *TestClient) handleCounterEvent(msg *protocol.WSMessage) {
 	}).Info("Counter event received")
 }
 
-func (c *TestClient) handleTracerEvent(msg *protocol.WSMessage) {
+func (c *TestClient) handleTracerEvent(msg *protocol.WSMessageWithBinary) {
 	tracerData, ok := msg.Data.(map[string]interface{})
 	if !ok {
 		c.logger.Debug("Invalid tracer event data")
@@ -416,6 +410,8 @@ func (c *TestClient) handleTracerEvent(msg *protocol.WSMessage) {
 	statusCode, _ := tracerData["status_code"].(float64)
 	requestSize, _ := tracerData["request_size"].(float64)
 	responseSize, _ := tracerData["response_size"].(float64)
+	requestData := tracerData["request_data"]
+	responseData := tracerData["response_data"]
 
 	c.logger.WithFields(logrus.Fields{
 		"request_id":    requestID,
@@ -423,5 +419,7 @@ func (c *TestClient) handleTracerEvent(msg *protocol.WSMessage) {
 		"status_code":   int(statusCode),
 		"request_size":  int64(requestSize),
 		"response_size": int64(responseSize),
+		"request_data":  requestData,
+		"response_data": responseData,
 	}).Info("Tracer event received")
 }

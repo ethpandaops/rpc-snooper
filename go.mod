@@ -3,6 +3,7 @@ module github.com/ethpandaops/rpc-snooper
 go 1.24
 
 require (
+	github.com/andybalholm/brotli v1.2.0
 	github.com/fatih/color v1.16.0
 	github.com/gorilla/mux v1.8.1
 	github.com/gorilla/websocket v1.5.3

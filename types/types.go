@@ -18,50 +18,59 @@ type Module interface {
 }
 
 type RequestContext struct {
-	Context     context.Context
-	ID          string
+	CallCtx     ProxyCallContext
 	Method      string
 	URL         *url.URL
 	Headers     http.Header
 	Body        interface{}
+	BodyBytes   []byte
 	ContentType string
 	Timestamp   time.Time
-	Modified    bool
-	ModifiedBy  uint64
 }
 
 type ResponseContext struct {
-	Context     context.Context
-	ID          string
+	CallCtx     ProxyCallContext
 	StatusCode  int
 	Headers     http.Header
 	Body        interface{}
+	BodyBytes   []byte
 	ContentType string
 	Timestamp   time.Time
-	Modified    bool
-	ModifiedBy  uint64
+	Duration    time.Duration
 }
 
 type ConnectionManager interface {
 	SendMessage(msg *protocol.WSMessage) error
-	WaitForResponse(requestID uint64) (*protocol.WSMessage, error)
+	SendMessageWithBinary(msg *protocol.WSMessage, binaryData []byte) error
+	WaitForResponse(requestID uint64) (*protocol.WSMessageWithBinary, error)
 	GenerateRequestID() uint64
 }
-
 type FilterConfig struct {
+	RequestFilter  *Filter `json:"request_filter,omitempty"`
+	ResponseFilter *Filter `json:"response_filter,omitempty"`
+}
+
+type Filter struct {
 	ContentTypes []string    `json:"content_types,omitempty"`
 	JSONQuery    string      `json:"json_query,omitempty"`
-	Methods      []string    `json:"methods,omitempty"`      // HTTP methods to filter on
-	StatusCodes  []int       `json:"status_codes,omitempty"` // Response status codes to filter on
+	Methods      []string    `json:"methods,omitempty"`      // HTTP methods to filter on (for requests)
+	StatusCodes  []int       `json:"status_codes,omitempty"` // Response status codes to filter on (for responses)
 	compiled     interface{} // gojq.Query - using interface{} to avoid import cycle
 }
 
 // GetCompiled returns the compiled gojq query
-func (f *FilterConfig) GetCompiled() interface{} {
+func (f *Filter) GetCompiled() interface{} {
 	return f.compiled
 }
 
 // SetCompiled sets the compiled gojq query
-func (f *FilterConfig) SetCompiled(compiled interface{}) {
+func (f *Filter) SetCompiled(compiled interface{}) {
 	f.compiled = compiled
+}
+
+type ProxyCallContext interface {
+	Context() context.Context
+	ID() uint64
+	SetData(key string, value interface{})
+	GetData(key string) interface{}
 }

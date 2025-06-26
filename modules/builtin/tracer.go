@@ -1,19 +1,23 @@
 package builtin
 
 import (
+	"encoding/json"
 	"fmt"
-	"sync"
+	"strings"
 	"time"
 
 	"github.com/ethpandaops/rpc-snooper/modules/protocol"
-	"github.com/ethpandaops/rpc-snooper/modules/types"
+	"github.com/ethpandaops/rpc-snooper/types"
+	"github.com/itchyny/gojq"
 )
 
 type ResponseTracer struct {
-	Id           uint64
-	ConnMgr      types.ConnectionManager
-	RequestTimes map[string]time.Time
-	Mu           sync.RWMutex
+	Id             uint64
+	ConnMgr        types.ConnectionManager
+	requestSelect  string
+	responseSelect string
+	requestQuery   *gojq.Query
+	responseQuery  *gojq.Query
 }
 
 func (rt *ResponseTracer) ID() uint64 {
@@ -21,38 +25,42 @@ func (rt *ResponseTracer) ID() uint64 {
 }
 
 func (rt *ResponseTracer) OnRequest(ctx *types.RequestContext) (*types.RequestContext, error) {
-	rt.Mu.Lock()
-	if rt.RequestTimes == nil {
-		rt.RequestTimes = make(map[string]time.Time)
+	ctx.CallCtx.SetData("wants_response", true)
+	ctx.CallCtx.SetData("request_size", len(ctx.BodyBytes))
+
+	// Extract request data if query is configured
+	if rt.requestQuery != nil && strings.Contains(ctx.ContentType, "json") {
+		requestData := rt.extractData(rt.requestQuery, ctx.Body)
+		if requestData != nil {
+			ctx.CallCtx.SetData("request_extracted_data", requestData)
+		}
 	}
-	rt.RequestTimes[ctx.ID] = ctx.Timestamp
-	rt.Mu.Unlock()
 
 	return ctx, nil
 }
 
 func (rt *ResponseTracer) OnResponse(ctx *types.ResponseContext) (*types.ResponseContext, error) {
-	rt.Mu.RLock()
-	startTime, exists := rt.RequestTimes[ctx.ID]
-	rt.Mu.RUnlock()
+	duration := ctx.Duration
+	requestSize, _ := ctx.CallCtx.GetData("request_size").(int)
 
-	if !exists {
-		return ctx, nil
+	// Extract response data if query is configured
+	var responseData interface{}
+	if rt.responseQuery != nil && strings.Contains(ctx.ContentType, "json") {
+		responseData = rt.extractData(rt.responseQuery, ctx.Body)
 	}
 
-	rt.Mu.Lock()
-	delete(rt.RequestTimes, ctx.ID)
-	rt.Mu.Unlock()
+	// Get previously extracted request data
+	requestData := ctx.CallCtx.GetData("request_extracted_data")
 
-	duration := ctx.Timestamp.Sub(startTime)
-
-	tracerEvent := protocol.TracerEvent{
+	tracerEvent := &protocol.TracerEvent{
 		ModuleID:     rt.Id,
-		RequestID:    ctx.ID,
+		RequestID:    ctx.CallCtx.ID(),
 		Duration:     duration.Milliseconds(),
-		RequestSize:  rt.calculateSize(ctx.Body),
-		ResponseSize: rt.calculateSize(ctx.Body),
+		ResponseSize: int64(len(ctx.BodyBytes)),
+		RequestSize:  int64(requestSize),
 		StatusCode:   ctx.StatusCode,
+		RequestData:  requestData,
+		ResponseData: responseData,
 	}
 
 	msg := &protocol.WSMessage{
@@ -70,27 +78,70 @@ func (rt *ResponseTracer) OnResponse(ctx *types.ResponseContext) (*types.Respons
 }
 
 func (rt *ResponseTracer) Configure(config map[string]interface{}) error {
+	// Parse request_select if provided
+	if requestSelect, ok := config["request_select"].(string); ok && requestSelect != "" {
+		rt.requestSelect = requestSelect
+		query, err := gojq.Parse(requestSelect)
+		if err != nil {
+			return fmt.Errorf("failed to parse request_select query: %w", err)
+		}
+		rt.requestQuery = query
+	}
+
+	// Parse response_select if provided
+	if responseSelect, ok := config["response_select"].(string); ok && responseSelect != "" {
+		rt.responseSelect = responseSelect
+		query, err := gojq.Parse(responseSelect)
+		if err != nil {
+			return fmt.Errorf("failed to parse response_select query: %w", err)
+		}
+		rt.responseQuery = query
+	}
+
 	return nil
 }
 
 func (rt *ResponseTracer) Close() error {
-	rt.Mu.Lock()
-	defer rt.Mu.Unlock()
-	rt.RequestTimes = nil
 	return nil
 }
 
-func (rt *ResponseTracer) calculateSize(data interface{}) int64 {
-	if data == nil {
-		return 0
+// extractData runs a gojq query against the provided data and returns the result
+func (rt *ResponseTracer) extractData(query *gojq.Query, body interface{}) interface{} {
+	// Convert body to JSON if it's not already
+	var data interface{}
+	switch v := body.(type) {
+	case []byte:
+		if err := json.Unmarshal(v, &data); err != nil {
+			return nil
+		}
+	case string:
+		if err := json.Unmarshal([]byte(v), &data); err != nil {
+			return nil
+		}
+	default:
+		data = v
 	}
 
-	switch v := data.(type) {
-	case []byte:
-		return int64(len(v))
-	case string:
-		return int64(len(v))
-	default:
-		return 0
+	// Run the query and collect all results
+	iter := query.Run(data)
+	var results []interface{}
+	for {
+		v, ok := iter.Next()
+		if !ok {
+			break
+		}
+		if _, ok := v.(error); ok {
+			// Skip errors
+			continue
+		}
+		results = append(results, v)
 	}
+
+	// Return based on number of results
+	if len(results) == 0 {
+		return nil
+	} else if len(results) == 1 {
+		return results[0]
+	}
+	return results
 }

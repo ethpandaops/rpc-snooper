@@ -11,7 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ethpandaops/rpc-snooper/modules/types"
+	"github.com/andybalholm/brotli"
+	"github.com/ethpandaops/rpc-snooper/types"
 	"github.com/ethpandaops/rpc-snooper/utils"
 	"github.com/fatih/color"
 	"github.com/sirupsen/logrus"
@@ -81,7 +82,7 @@ func (r *logReadCloser) Close() error {
 	return resErr
 }
 
-func (s *Snooper) logRequest(ctx *proxyCallContext, req *http.Request, body io.ReadCloser) {
+func (s *Snooper) logRequest(ctx *ProxyCallContext, req *http.Request, body io.ReadCloser) {
 	contentEncoding := req.Header.Get("Content-Encoding")
 	contentType := req.Header.Get("Content-Type")
 
@@ -94,6 +95,9 @@ func (s *Snooper) logRequest(ctx *proxyCallContext, req *http.Request, body io.R
 		defer gzipReader.Close()
 
 		body = gzipReader
+	} else if contentEncoding == "br" {
+		brotliReader := brotli.NewReader(body)
+		body = io.NopCloser(brotliReader)
 	}
 
 	logFields := logrus.Fields{
@@ -135,7 +139,7 @@ func (s *Snooper) logRequest(ctx *proxyCallContext, req *http.Request, body io.R
 	s.logger.WithFields(logFields).Infof("REQUEST #%v: %v %v", ctx.callIndex, req.Method, req.URL.String())
 }
 
-func (s *Snooper) logResponse(ctx *proxyCallContext, req *http.Request, rsp *http.Response, body io.ReadCloser) {
+func (s *Snooper) logResponse(ctx *ProxyCallContext, req *http.Request, rsp *http.Response, body io.ReadCloser, callDuration time.Duration) {
 	contentEncoding := rsp.Header.Get("Content-Encoding")
 	contentType := rsp.Header.Get("Content-Type")
 
@@ -148,6 +152,9 @@ func (s *Snooper) logResponse(ctx *proxyCallContext, req *http.Request, rsp *htt
 		defer gzipReader.Close()
 
 		body = gzipReader
+	} else if contentEncoding == "br" {
+		brotliReader := brotli.NewReader(body)
+		body = io.NopCloser(brotliReader)
 	}
 
 	logFields := logrus.Fields{
@@ -189,12 +196,12 @@ func (s *Snooper) logResponse(ctx *proxyCallContext, req *http.Request, rsp *htt
 	}
 
 	// Process through modules using the already parsed/decoded data
-	s.processResponseModules(ctx, req, rsp, bodyData, parsedData, contentType)
+	s.processResponseModules(ctx, req, rsp, bodyData, parsedData, contentType, callDuration)
 
 	s.logger.WithFields(logFields).Infof("RESPONSE #%v: %v %v", ctx.callIndex, req.Method, req.URL.String())
 }
 
-func (s *Snooper) logEventResponse(req *http.Request, rsp *http.Response, body []byte) {
+func (s *Snooper) logEventResponse(ctx *ProxyCallContext, req *http.Request, rsp *http.Response, body []byte) {
 	logFields := logrus.Fields{
 		"color": color.FgGreen,
 	}
@@ -241,18 +248,16 @@ func (s *Snooper) logEventResponse(req *http.Request, rsp *http.Response, body [
 	}
 
 	// Process through modules using the already parsed event data
-	s.processEventModules(req, rsp, body, parsedEventData)
+	s.processEventModules(ctx, req, rsp, body, parsedEventData)
 
 	s.logger.WithFields(logFields).Infof("RESPONSE-EVENT %v %v (status: %v, body: %v)", req.Method, req.URL.EscapedPath(), rsp.StatusCode, len(body))
 }
 
 // processRequestModules processes request data through modules using already parsed/decoded data
-func (s *Snooper) processRequestModules(ctx *proxyCallContext, req *http.Request, bodyData []byte, parsedData interface{}, contentType string) {
+func (s *Snooper) processRequestModules(ctx *ProxyCallContext, req *http.Request, bodyData []byte, parsedData interface{}, contentType string) {
 	if s.moduleManager == nil || !s.moduleManager.IsEnabled() {
 		return
 	}
-
-	requestID := fmt.Sprintf("%d", ctx.callIndex)
 
 	// Create request context for modules with the parsed data
 	// Use parsed JSON data if available, otherwise use raw byte data
@@ -264,15 +269,14 @@ func (s *Snooper) processRequestModules(ctx *proxyCallContext, req *http.Request
 	}
 
 	reqCtx := &types.RequestContext{
-		Context:     ctx.context,
-		ID:          requestID,
+		CallCtx:     ctx,
 		Method:      req.Method,
 		URL:         req.URL,
 		Headers:     req.Header,
 		Body:        bodyForModules,
+		BodyBytes:   bodyData,
 		ContentType: contentType,
 		Timestamp:   time.Now(),
-		Modified:    false,
 	}
 
 	// Process through modules (non-modifying, observation only)
@@ -283,12 +287,10 @@ func (s *Snooper) processRequestModules(ctx *proxyCallContext, req *http.Request
 }
 
 // processResponseModules processes response data through modules using already parsed/decoded data
-func (s *Snooper) processResponseModules(ctx *proxyCallContext, req *http.Request, rsp *http.Response, bodyData []byte, parsedData interface{}, contentType string) {
+func (s *Snooper) processResponseModules(ctx *ProxyCallContext, req *http.Request, rsp *http.Response, bodyData []byte, parsedData interface{}, contentType string, callDuration time.Duration) {
 	if s.moduleManager == nil || !s.moduleManager.IsEnabled() {
 		return
 	}
-
-	requestID := fmt.Sprintf("%d", ctx.callIndex)
 
 	// Create response context for modules with the parsed data
 	// Use parsed JSON data if available, otherwise use raw byte data
@@ -300,14 +302,14 @@ func (s *Snooper) processResponseModules(ctx *proxyCallContext, req *http.Reques
 	}
 
 	respCtx := &types.ResponseContext{
-		Context:     ctx.context,
-		ID:          requestID,
+		CallCtx:     ctx,
 		StatusCode:  rsp.StatusCode,
 		Headers:     rsp.Header,
 		Body:        bodyForModules,
+		BodyBytes:   bodyData,
 		ContentType: contentType,
 		Timestamp:   time.Now(),
-		Modified:    false,
+		Duration:    callDuration,
 	}
 
 	// Process through modules (non-modifying, observation only)
@@ -318,13 +320,10 @@ func (s *Snooper) processResponseModules(ctx *proxyCallContext, req *http.Reques
 }
 
 // processEventModules processes event stream data through modules using already parsed event data
-func (s *Snooper) processEventModules(req *http.Request, rsp *http.Response, bodyData []byte, parsedData interface{}) {
+func (s *Snooper) processEventModules(ctx *ProxyCallContext, req *http.Request, rsp *http.Response, bodyData []byte, parsedData interface{}) {
 	if s.moduleManager == nil || !s.moduleManager.IsEnabled() {
 		return
 	}
-
-	// For event streams, we don't have a callIndex context, so generate a simple ID
-	requestID := fmt.Sprintf("event-%d", time.Now().UnixNano())
 
 	// Use parsed event data if available, otherwise use raw byte data
 	var bodyForModules interface{}
@@ -336,14 +335,12 @@ func (s *Snooper) processEventModules(req *http.Request, rsp *http.Response, bod
 
 	// Create response context for event modules
 	respCtx := &types.ResponseContext{
-		Context:     req.Context(),
-		ID:          requestID,
+		CallCtx:     ctx,
 		StatusCode:  rsp.StatusCode,
 		Headers:     rsp.Header,
 		Body:        bodyForModules,
 		ContentType: "text/event-stream",
 		Timestamp:   time.Now(),
-		Modified:    false,
 	}
 
 	// Process through modules (non-modifying, observation only)

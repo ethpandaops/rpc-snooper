@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/ethpandaops/rpc-snooper/modules/protocol"
-	"github.com/ethpandaops/rpc-snooper/modules/types"
+	"github.com/ethpandaops/rpc-snooper/types"
 )
 
 type RequestSnooper struct {
@@ -21,8 +21,7 @@ func (rs *RequestSnooper) OnRequest(ctx *types.RequestContext) (*types.RequestCo
 	hookEvent := protocol.HookEvent{
 		ModuleID:    rs.Id,
 		HookType:    "request",
-		RequestID:   ctx.ID,
-		Data:        ctx.Body,
+		RequestID:   ctx.CallCtx.ID(),
 		ContentType: ctx.ContentType,
 	}
 
@@ -33,7 +32,7 @@ func (rs *RequestSnooper) OnRequest(ctx *types.RequestContext) (*types.RequestCo
 		Timestamp: time.Now().UnixNano(),
 	}
 
-	if err := rs.ConnMgr.SendMessage(msg); err != nil {
+	if err := rs.ConnMgr.SendMessageWithBinary(msg, ctx.BodyBytes); err != nil {
 		// Log error but don't fail the request processing
 		return ctx, fmt.Errorf("failed to send hook event: %w", err)
 	}
@@ -62,6 +61,7 @@ func (rs *ResponseSnooper) ID() uint64 {
 }
 
 func (rs *ResponseSnooper) OnRequest(ctx *types.RequestContext) (*types.RequestContext, error) {
+	ctx.CallCtx.SetData("wants_response", true)
 	return ctx, nil
 }
 
@@ -69,8 +69,7 @@ func (rs *ResponseSnooper) OnResponse(ctx *types.ResponseContext) (*types.Respon
 	hookEvent := protocol.HookEvent{
 		ModuleID:    rs.Id,
 		HookType:    "response",
-		RequestID:   ctx.ID,
-		Data:        ctx.Body,
+		RequestID:   ctx.CallCtx.ID(),
 		ContentType: ctx.ContentType,
 	}
 
@@ -81,7 +80,7 @@ func (rs *ResponseSnooper) OnResponse(ctx *types.ResponseContext) (*types.Respon
 		Timestamp: time.Now().UnixNano(),
 	}
 
-	if err := rs.ConnMgr.SendMessage(msg); err != nil {
+	if err := rs.ConnMgr.SendMessageWithBinary(msg, ctx.BodyBytes); err != nil {
 		// Log error but don't fail the response processing
 		return ctx, fmt.Errorf("failed to send hook event: %w", err)
 	}

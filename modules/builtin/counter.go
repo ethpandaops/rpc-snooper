@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/ethpandaops/rpc-snooper/modules/protocol"
-	"github.com/ethpandaops/rpc-snooper/modules/types"
+	"github.com/ethpandaops/rpc-snooper/types"
 )
 
 type RequestCounter struct {
