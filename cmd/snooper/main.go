@@ -18,6 +18,8 @@ type CliArgs struct {
 	port    int
 	nocolor bool
 	noapi   bool
+	apiPort int
+	apiAuth string
 }
 
 func main() {
@@ -31,6 +33,8 @@ func main() {
 	flags.IntVarP(&cliArgs.port, "port", "p", 3000, "Port to listen for incoming requests.")
 	flags.BoolVar(&cliArgs.nocolor, "no-color", false, "Do not use terminal colors in output")
 	flags.BoolVar(&cliArgs.noapi, "no-api", false, "Do not provide management REST api")
+	flags.IntVar(&cliArgs.apiPort, "api-port", 0, "Optional separate port for the snooper API endpoints")
+	flags.StringVar(&cliArgs.apiAuth, "api-auth", "", "Optional authentication for API endpoints (format: user:pass,user2:pass2,...)")
 
 	//nolint:errcheck // ignore
 	flags.Parse(os.Args)
@@ -76,6 +80,15 @@ func main() {
 	rpcSnooper, err := snooper.NewSnooper(cliArgs.target, logger)
 	if err != nil {
 		logger.Errorf("Failed initializing server: %v", err)
+	}
+
+	// Start separate API server if api-port is specified
+	if cliArgs.apiPort > 0 {
+		err = rpcSnooper.StartAPIServer(cliArgs.bind, cliArgs.apiPort, cliArgs.apiAuth)
+		if err != nil {
+			logger.Errorf("Failed starting API server: %v", err)
+			return
+		}
 	}
 
 	err = rpcSnooper.StartServer(cliArgs.bind, cliArgs.port, cliArgs.noapi)

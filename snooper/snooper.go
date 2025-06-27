@@ -1,10 +1,13 @@
 package snooper
 
 import (
+	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -21,6 +24,8 @@ type Snooper struct {
 	logger        logrus.FieldLogger
 	api           *API
 	moduleManager *modules.Manager
+	apiServer     *http.Server
+	apiAuth       map[string]string
 
 	callIndexCounter uint64
 	callIndexMutex   sync.Mutex
@@ -65,6 +70,114 @@ func (s *Snooper) StartServer(host string, port int, noAPI bool) error {
 	s.logger.Infof("listening on: %v", srv.Addr)
 
 	return srv.ListenAndServe()
+}
+
+func (s *Snooper) StartAPIServer(host string, port int, authConfig string) error {
+	// Parse authentication configuration
+	if authConfig != "" {
+		s.apiAuth = make(map[string]string)
+
+		for _, cred := range strings.Split(authConfig, ",") {
+			parts := strings.SplitN(cred, ":", 2)
+			if len(parts) == 2 {
+				s.apiAuth[parts[0]] = parts[1]
+			}
+		}
+	}
+
+	router := mux.NewRouter()
+
+	// Only expose /_snooper endpoints on this API server
+	s.api = newAPI(s)
+	apiRouter := router.PathPrefix("/_snooper/").Subrouter()
+	s.api.initRouter(apiRouter)
+
+	n := negroni.New()
+	n.Use(negroni.NewRecovery())
+
+	// Add authentication middleware if auth is configured
+	if len(s.apiAuth) > 0 {
+		n.UseFunc(s.authMiddleware)
+	}
+
+	n.UseHandler(router)
+
+	s.apiServer = &http.Server{
+		Addr:              fmt.Sprintf("%v:%v", host, port),
+		Handler:           n,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	s.logger.Infof("API server listening on: %v", s.apiServer.Addr)
+
+	if len(s.apiAuth) > 0 {
+		s.logger.Infof("API authentication enabled for %d users", len(s.apiAuth))
+	}
+
+	go func() {
+		if err := s.apiServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			s.logger.Errorf("API server error: %v", err)
+		}
+	}()
+
+	return nil
+}
+
+func (s *Snooper) authMiddleware(w http.ResponseWriter, r *http.Request, next http.HandlerFunc) {
+	// Extract basic auth credentials
+	auth := r.Header.Get("Authorization")
+	if auth == "" {
+		s.sendUnauthorized(w)
+		return
+	}
+
+	const prefix = "Basic "
+	if !strings.HasPrefix(auth, prefix) {
+		s.sendUnauthorized(w)
+		return
+	}
+
+	decoded, err := base64.StdEncoding.DecodeString(auth[len(prefix):])
+	if err != nil {
+		s.sendUnauthorized(w)
+		return
+	}
+
+	credentials := string(decoded)
+
+	colonIndex := strings.IndexByte(credentials, ':')
+	if colonIndex < 0 {
+		s.sendUnauthorized(w)
+		return
+	}
+
+	username := credentials[:colonIndex]
+	password := credentials[colonIndex+1:]
+
+	// Check credentials
+	expectedPassword, ok := s.apiAuth[username]
+	if !ok || subtle.ConstantTimeCompare([]byte(password), []byte(expectedPassword)) != 1 {
+		s.sendUnauthorized(w)
+		return
+	}
+
+	next(w, r)
+}
+
+func (s *Snooper) sendUnauthorized(w http.ResponseWriter) {
+	w.Header().Set("WWW-Authenticate", `Basic realm="Snooper API"`)
+	w.WriteHeader(http.StatusUnauthorized)
+	w.Header().Set("Content-Type", "application/json")
+
+	j := json.NewEncoder(w)
+
+	err := j.Encode(map[string]any{
+		"status":  "error",
+		"message": "Unauthorized",
+	})
+	if err != nil {
+		s.logger.Errorf("failed writing unauthorized response: %v", err)
+	}
 }
 
 func (s *Snooper) ServeHTTP(w http.ResponseWriter, r *http.Request) {
