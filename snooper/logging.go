@@ -138,10 +138,19 @@ func (s *Snooper) logRequest(ctx *ProxyCallContext, req *http.Request, body io.R
 		}
 	}
 
+	s.logger.WithFields(logFields).Infof("REQUEST #%v: %v %v", ctx.callIndex, req.Method, req.URL.String())
+
+	ctx.SetData(0, "request_size", len(bodyData))
+
+	// Extract and store jrpc_method for metrics collection if metrics are enabled
+	if s.metricsEnabled && parsedData != nil {
+		if jrpcMethod, ok := parsedData.(map[string]interface{}); ok {
+			ctx.SetData(0, "jrpc_method", jrpcMethod["method"])
+		}
+	}
+
 	// Process through modules using the already parsed/decoded data
 	s.processRequestModules(ctx, req, bodyData, parsedData, contentType)
-
-	s.logger.WithFields(logFields).Infof("REQUEST #%v: %v %v", ctx.callIndex, req.Method, req.URL.String())
 }
 
 func (s *Snooper) logResponse(ctx *ProxyCallContext, req *http.Request, rsp *http.Response, body io.ReadCloser, callDuration time.Duration) {
@@ -202,10 +211,10 @@ func (s *Snooper) logResponse(ctx *ProxyCallContext, req *http.Request, rsp *htt
 		}
 	}
 
+	s.logger.WithFields(logFields).Infof("RESPONSE #%v: %v %v", ctx.callIndex, req.Method, req.URL.String())
+
 	// Process through modules using the already parsed/decoded data
 	s.processResponseModules(ctx, req, rsp, bodyData, parsedData, contentType, callDuration)
-
-	s.logger.WithFields(logFields).Infof("RESPONSE #%v: %v %v", ctx.callIndex, req.Method, req.URL.String())
 }
 
 func (s *Snooper) logEventResponse(ctx *ProxyCallContext, req *http.Request, rsp *http.Response, body []byte) {
@@ -295,7 +304,7 @@ func (s *Snooper) processRequestModules(ctx *ProxyCallContext, req *http.Request
 }
 
 // processResponseModules processes response data through modules using already parsed/decoded data
-func (s *Snooper) processResponseModules(ctx *ProxyCallContext, _ *http.Request, rsp *http.Response, bodyData []byte, parsedData interface{}, contentType string, callDuration time.Duration) {
+func (s *Snooper) processResponseModules(ctx *ProxyCallContext, req *http.Request, rsp *http.Response, bodyData []byte, parsedData interface{}, contentType string, callDuration time.Duration) {
 	if s.moduleManager == nil || !s.moduleManager.IsEnabled() {
 		return
 	}
@@ -324,6 +333,11 @@ func (s *Snooper) processResponseModules(ctx *ProxyCallContext, _ *http.Request,
 	_, err := s.moduleManager.ProcessResponse(respCtx)
 	if err != nil {
 		s.logger.WithError(err).Warn("Module processing failed for response")
+	}
+
+	// Collect metrics if enabled
+	if s.metricsEnabled {
+		s.collectMetrics(req, respCtx)
 	}
 }
 

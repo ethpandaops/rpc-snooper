@@ -11,8 +11,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ethpandaops/rpc-snooper/metrics"
 	"github.com/ethpandaops/rpc-snooper/modules"
+	"github.com/ethpandaops/rpc-snooper/types"
 	"github.com/gorilla/mux"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/sirupsen/logrus"
 	"github.com/urfave/negroni"
 )
@@ -20,12 +23,14 @@ import (
 type Snooper struct {
 	CallTimeout time.Duration
 
-	target        *url.URL
-	logger        logrus.FieldLogger
-	api           *API
-	moduleManager *modules.Manager
-	apiServer     *http.Server
-	apiAuth       map[string]string
+	target         *url.URL
+	logger         logrus.FieldLogger
+	api            *API
+	moduleManager  *modules.Manager
+	apiServer      *http.Server
+	apiAuth        map[string]string
+	metricsServer  *http.Server
+	metricsEnabled bool
 
 	callIndexCounter uint64
 	callIndexMutex   sync.Mutex
@@ -121,6 +126,53 @@ func (s *Snooper) StartAPIServer(host string, port int, authConfig string) error
 	}()
 
 	return nil
+}
+
+func (s *Snooper) StartMetricsServer(host string, port int) error {
+	s.metricsEnabled = true
+
+	router := mux.NewRouter()
+	router.Handle("/metrics", promhttp.Handler())
+
+	s.metricsServer = &http.Server{
+		Addr:              fmt.Sprintf("%v:%v", host, port),
+		Handler:           router,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	s.logger.Infof("Metrics server listening on: %v", s.metricsServer.Addr)
+
+	go func() {
+		if err := s.metricsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			s.logger.Errorf("Metrics server error: %v", err)
+		}
+	}()
+
+	return nil
+}
+
+func (s *Snooper) collectMetrics(req *http.Request, respCtx *types.ResponseContext) {
+	// Create request context for metrics collection
+	reqCtx := &types.RequestContext{
+		Method:    req.Method,
+		URL:       req.URL,
+		Headers:   req.Header,
+		Timestamp: time.Now(),
+	}
+
+	// Create metrics entry
+	metricsEntry := metrics.CreateMetricsEntryFromContexts(s.target, reqCtx, respCtx)
+
+	// Extract jrpc_method from stored context data
+	if ctx, ok := respCtx.CallCtx.(*ProxyCallContext); ok {
+		if jrpcMethod := ctx.GetData(0, "jrpc_method"); jrpcMethod != nil {
+			if method, ok := jrpcMethod.(string); ok {
+				metricsEntry.JRPCMethod = method
+			}
+		}
+	}
+
+	metrics.PrometheusMetricsRegister(metricsEntry)
 }
 
 func (s *Snooper) authMiddleware(w http.ResponseWriter, r *http.Request, next http.HandlerFunc) {
