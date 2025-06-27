@@ -115,15 +115,15 @@ func CreateMetricsEntryFromContexts(target *url.URL, reqCtx *types.RequestContex
 		}
 
 		entry.BytesReceived = int64(len(reqCtx.BodyBytes))
+	}
 
-		if jrpcMethod := reqCtx.CallCtx.GetData(0, "jrpc_method"); jrpcMethod != nil {
+	if respCtx != nil {
+		if jrpcMethod := respCtx.CallCtx.GetData(0, "jrpc_method"); jrpcMethod != nil {
 			if jrpcMethodStr, ok := jrpcMethod.(string); ok {
 				entry.JRPCMethod = jrpcMethodStr
 			}
 		}
-	}
 
-	if respCtx != nil {
 		entry.Status = strconv.Itoa(respCtx.StatusCode)
 		entry.BytesSent = int64(len(respCtx.BodyBytes))
 		entry.Duration = respCtx.Duration.Seconds()
