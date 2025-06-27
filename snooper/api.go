@@ -17,5 +17,6 @@ func newAPI(snooper *Snooper) *API {
 }
 
 func (api *API) initRouter(router *mux.Router) {
+	router.HandleFunc("/control", api.snooper.moduleManager.HandleWebSocket)
 	router.PathPrefix("/").Handler(http.DefaultServeMux)
 }

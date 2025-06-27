@@ -9,7 +9,10 @@ import (
 	"net/http"
 	"runtime/debug"
 	"strings"
+	"time"
 
+	"github.com/andybalholm/brotli"
+	"github.com/ethpandaops/rpc-snooper/types"
 	"github.com/ethpandaops/rpc-snooper/utils"
 	"github.com/fatih/color"
 	"github.com/sirupsen/logrus"
@@ -67,8 +70,6 @@ func (r *logReadCloser) Read(p []byte) (n int, err error) {
 }
 
 func (r *logReadCloser) Close() error {
-	fmt.Printf("logReadCloser close")
-
 	var resErr error
 
 	for _, closer := range r.closers {
@@ -81,11 +82,12 @@ func (r *logReadCloser) Close() error {
 	return resErr
 }
 
-func (s *Snooper) logRequest(ctx *proxyCallContext, req *http.Request, body io.ReadCloser) {
+func (s *Snooper) logRequest(ctx *ProxyCallContext, req *http.Request, body io.ReadCloser) {
 	contentEncoding := req.Header.Get("Content-Encoding")
 	contentType := req.Header.Get("Content-Type")
 
-	if contentEncoding == "gzip" {
+	switch contentEncoding {
+	case "gzip":
 		gzipReader, err := gzip.NewReader(body)
 		if err != nil {
 			s.logger.Warnf("failed unpacking gzip request body: %v", err)
@@ -94,6 +96,9 @@ func (s *Snooper) logRequest(ctx *proxyCallContext, req *http.Request, body io.R
 		defer gzipReader.Close()
 
 		body = gzipReader
+	case "br":
+		brotliReader := brotli.NewReader(body)
+		body = io.NopCloser(brotliReader)
 	}
 
 	logFields := logrus.Fields{
@@ -101,36 +106,50 @@ func (s *Snooper) logRequest(ctx *proxyCallContext, req *http.Request, body io.R
 		"length": req.ContentLength,
 	}
 
+	var bodyData []byte
+
+	var parsedData any
+
 	switch {
 	case req.ContentLength == 0:
 		logFields["body"] = []byte{}
+		bodyData = []byte{}
 	case strings.Contains(contentType, "application/octet-stream"):
 		body = utils.NewHexEncoder(body)
-		bodyData, _ := io.ReadAll(body)
+		bodyData, _ = io.ReadAll(body)
 		logFields["type"] = "ssz"
 		logFields["body"] = fmt.Sprintf("%v\n\n", string(bodyData))
 	default:
-		bodyData, _ := io.ReadAll(body)
+		bodyData, _ = io.ReadAll(body)
 
-		if bodyData = s.beautifyJSON(bodyData); len(bodyData) > 0 {
+		if beautifiedJSON := s.beautifyJSON(bodyData); len(beautifiedJSON) > 0 {
 			logFields["type"] = "json"
-			logFields["body"] = fmt.Sprintf("%v\n\n", string(bodyData))
+			logFields["body"] = fmt.Sprintf("%v\n\n", string(beautifiedJSON))
+
+			// Store parsed JSON for module processing
+			_ = json.Unmarshal(bodyData, &parsedData)
 		} else {
 			logFields["type"] = "unknown"
 			bodyBuf := make([]byte, len(bodyData)*2)
+
 			hex.Encode(bodyBuf, bodyData)
+
 			logFields["body"] = bodyBuf
 		}
 	}
 
+	// Process through modules using the already parsed/decoded data
+	s.processRequestModules(ctx, req, bodyData, parsedData, contentType)
+
 	s.logger.WithFields(logFields).Infof("REQUEST #%v: %v %v", ctx.callIndex, req.Method, req.URL.String())
 }
 
-func (s *Snooper) logResponse(ctx *proxyCallContext, req *http.Request, rsp *http.Response, body io.ReadCloser) {
+func (s *Snooper) logResponse(ctx *ProxyCallContext, req *http.Request, rsp *http.Response, body io.ReadCloser, callDuration time.Duration) {
 	contentEncoding := rsp.Header.Get("Content-Encoding")
 	contentType := rsp.Header.Get("Content-Type")
 
-	if contentEncoding == "gzip" {
+	switch contentEncoding {
+	case "gzip":
 		gzipReader, err := gzip.NewReader(body)
 		if err != nil {
 			s.logger.Warnf("failed unpacking gzip response body: %v", err)
@@ -139,6 +158,9 @@ func (s *Snooper) logResponse(ctx *proxyCallContext, req *http.Request, rsp *htt
 		defer gzipReader.Close()
 
 		body = gzipReader
+	case "br":
+		brotliReader := brotli.NewReader(body)
+		body = io.NopCloser(brotliReader)
 	}
 
 	logFields := logrus.Fields{
@@ -152,19 +174,26 @@ func (s *Snooper) logResponse(ctx *proxyCallContext, req *http.Request, rsp *htt
 		logFields["color"] = color.FgRed
 	}
 
+	var bodyData []byte
+
+	var parsedData any
+
 	switch {
 	case rsp.ContentLength == 0:
 		logFields["body"] = []byte{}
+		bodyData = []byte{}
 	case strings.Contains(contentType, "application/octet-stream"):
 		body = utils.NewHexEncoder(body)
-		bodyData, _ := io.ReadAll(body)
+		bodyData, _ = io.ReadAll(body)
 		logFields["type"] = "ssz"
 		logFields["body"] = fmt.Sprintf("%v\n\n", string(bodyData))
 	default:
-		bodyData, _ := io.ReadAll(body)
-		if bodyData = s.beautifyJSON(bodyData); len(bodyData) > 0 {
+		bodyData, _ = io.ReadAll(body)
+		if beautifiedJSON := s.beautifyJSON(bodyData); len(beautifiedJSON) > 0 {
 			logFields["type"] = "json"
-			logFields["body"] = fmt.Sprintf("%v\n\n", string(bodyData))
+			logFields["body"] = fmt.Sprintf("%v\n\n", string(beautifiedJSON))
+			// Store parsed JSON for module processing
+			_ = json.Unmarshal(bodyData, &parsedData)
 		} else {
 			logFields["type"] = "unknown"
 			bodyBuf := make([]byte, len(bodyData)*2)
@@ -173,10 +202,13 @@ func (s *Snooper) logResponse(ctx *proxyCallContext, req *http.Request, rsp *htt
 		}
 	}
 
+	// Process through modules using the already parsed/decoded data
+	s.processResponseModules(ctx, req, rsp, bodyData, parsedData, contentType, callDuration)
+
 	s.logger.WithFields(logFields).Infof("RESPONSE #%v: %v %v", ctx.callIndex, req.Method, req.URL.String())
 }
 
-func (s *Snooper) logEventResponse(req *http.Request, rsp *http.Response, body []byte) {
+func (s *Snooper) logEventResponse(ctx *ProxyCallContext, req *http.Request, rsp *http.Response, body []byte) {
 	logFields := logrus.Fields{
 		"color": color.FgGreen,
 	}
@@ -211,14 +243,117 @@ func (s *Snooper) logEventResponse(req *http.Request, rsp *http.Response, body [
 
 	logFields["body"] = body
 
+	var parsedEventData interface{}
+
 	if len(evt) >= 2 {
 		bodyJSON, err := json.Marshal(evt)
 		if err != nil {
 			s.logger.Warnf("failed parsing event data: %v", err)
 		} else {
 			logFields["body"] = fmt.Sprintf("%v\n\n", string(s.beautifyJSON(bodyJSON)))
+			parsedEventData = evt
 		}
 	}
 
+	// Process through modules using the already parsed event data
+	s.processEventModules(ctx, req, rsp, body, parsedEventData)
+
 	s.logger.WithFields(logFields).Infof("RESPONSE-EVENT %v %v (status: %v, body: %v)", req.Method, req.URL.EscapedPath(), rsp.StatusCode, len(body))
+}
+
+// processRequestModules processes request data through modules using already parsed/decoded data
+func (s *Snooper) processRequestModules(ctx *ProxyCallContext, req *http.Request, bodyData []byte, parsedData interface{}, contentType string) {
+	if s.moduleManager == nil || !s.moduleManager.IsEnabled() {
+		return
+	}
+
+	// Create request context for modules with the parsed data
+	// Use parsed JSON data if available, otherwise use raw byte data
+	var bodyForModules interface{}
+	if parsedData != nil {
+		bodyForModules = parsedData
+	} else {
+		bodyForModules = bodyData
+	}
+
+	reqCtx := &types.RequestContext{
+		CallCtx:     ctx,
+		Method:      req.Method,
+		URL:         req.URL,
+		Headers:     req.Header,
+		Body:        bodyForModules,
+		BodyBytes:   bodyData,
+		ContentType: contentType,
+		Timestamp:   time.Now(),
+	}
+
+	// Process through modules (non-modifying, observation only)
+	_, err := s.moduleManager.ProcessRequest(reqCtx)
+	if err != nil {
+		s.logger.WithError(err).Warn("Module processing failed for request")
+	}
+}
+
+// processResponseModules processes response data through modules using already parsed/decoded data
+func (s *Snooper) processResponseModules(ctx *ProxyCallContext, _ *http.Request, rsp *http.Response, bodyData []byte, parsedData interface{}, contentType string, callDuration time.Duration) {
+	if s.moduleManager == nil || !s.moduleManager.IsEnabled() {
+		return
+	}
+
+	// Create response context for modules with the parsed data
+	// Use parsed JSON data if available, otherwise use raw byte data
+	var bodyForModules interface{}
+	if parsedData != nil {
+		bodyForModules = parsedData
+	} else {
+		bodyForModules = bodyData
+	}
+
+	respCtx := &types.ResponseContext{
+		CallCtx:     ctx,
+		StatusCode:  rsp.StatusCode,
+		Headers:     rsp.Header,
+		Body:        bodyForModules,
+		BodyBytes:   bodyData,
+		ContentType: contentType,
+		Timestamp:   time.Now(),
+		Duration:    callDuration,
+	}
+
+	// Process through modules (non-modifying, observation only)
+	_, err := s.moduleManager.ProcessResponse(respCtx)
+	if err != nil {
+		s.logger.WithError(err).Warn("Module processing failed for response")
+	}
+}
+
+// processEventModules processes event stream data through modules using already parsed event data
+func (s *Snooper) processEventModules(ctx *ProxyCallContext, _ *http.Request, rsp *http.Response, bodyData []byte, parsedData interface{}) {
+	if s.moduleManager == nil || !s.moduleManager.IsEnabled() {
+		return
+	}
+
+	// Use parsed event data if available, otherwise use raw byte data
+	var bodyForModules interface{}
+	if parsedData != nil {
+		bodyForModules = parsedData
+	} else {
+		bodyForModules = bodyData
+	}
+
+	// Create response context for event modules
+	respCtx := &types.ResponseContext{
+		CallCtx:     ctx,
+		StatusCode:  rsp.StatusCode,
+		Headers:     rsp.Header,
+		Body:        bodyForModules,
+		ContentType: "text/event-stream",
+		Timestamp:   time.Now(),
+	}
+
+	// Process through modules (non-modifying, observation only)
+	_, err := s.moduleManager.ProcessResponse(respCtx)
+	if err != nil {
+		s.logger.WithError(err).Warn("Module processing failed for event stream")
+	}
 }
