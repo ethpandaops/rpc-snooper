@@ -33,6 +33,7 @@ func (fe *FilterEngine) CompileFilter(filter *types.Filter) error {
 	// Store the compiled query in the filter
 	// We use interface{} to avoid import cycles
 	filter.SetCompiled(query)
+
 	return nil
 }
 
@@ -45,12 +46,14 @@ func (fe *FilterEngine) ShouldProcessRequestFilter(filter *types.Filter, ctx *ty
 	// Check HTTP method filter
 	if len(filter.Methods) > 0 {
 		matched := false
+
 		for _, method := range filter.Methods {
 			if strings.EqualFold(ctx.Method, method) {
 				matched = true
 				break
 			}
 		}
+
 		if !matched {
 			return false
 		}
@@ -59,12 +62,14 @@ func (fe *FilterEngine) ShouldProcessRequestFilter(filter *types.Filter, ctx *ty
 	// Check content type filter
 	if len(filter.ContentTypes) > 0 {
 		matched := false
+
 		for _, ct := range filter.ContentTypes {
 			if strings.Contains(ctx.ContentType, ct) {
 				matched = true
 				break
 			}
 		}
+
 		if !matched {
 			return false
 		}
@@ -83,6 +88,7 @@ func (fe *FilterEngine) ShouldProcessRequest(filter *types.FilterConfig, ctx *ty
 	if filter == nil || filter.RequestFilter == nil {
 		return true
 	}
+
 	return fe.ShouldProcessRequestFilter(filter.RequestFilter, ctx)
 }
 
@@ -95,12 +101,14 @@ func (fe *FilterEngine) ShouldProcessResponseFilter(filter *types.Filter, ctx *t
 	// Check status code filter
 	if len(filter.StatusCodes) > 0 {
 		matched := false
+
 		for _, code := range filter.StatusCodes {
 			if ctx.StatusCode == code {
 				matched = true
 				break
 			}
 		}
+
 		if !matched {
 			return false
 		}
@@ -109,12 +117,14 @@ func (fe *FilterEngine) ShouldProcessResponseFilter(filter *types.Filter, ctx *t
 	// Check content type filter
 	if len(filter.ContentTypes) > 0 {
 		matched := false
+
 		for _, ct := range filter.ContentTypes {
 			if strings.Contains(ctx.ContentType, ct) {
 				matched = true
 				break
 			}
 		}
+
 		if !matched {
 			return false
 		}
@@ -133,6 +143,7 @@ func (fe *FilterEngine) ShouldProcessResponse(filter *types.FilterConfig, ctx *t
 	if filter == nil || filter.ResponseFilter == nil {
 		return true
 	}
+
 	return fe.ShouldProcessResponseFilter(filter.ResponseFilter, ctx)
 }
 
@@ -169,19 +180,23 @@ func (fe *FilterEngine) evaluateJSONQueryFilter(filter *types.Filter, body inter
 
 	// Run the query
 	iter := query.Run(data)
+
 	for {
 		v, ok := iter.Next()
 		if !ok {
 			break
 		}
+
 		if err, ok := v.(error); ok {
 			fe.logger.WithError(err).Debug("Error in JSON query evaluation")
 			return false
 		}
+
 		// If we get any truthy result, the filter matches
 		if result, ok := v.(bool); ok && result {
 			return true
 		}
+
 		// Non-boolean results that are not nil/false are considered truthy
 		if v != nil && v != false {
 			return true

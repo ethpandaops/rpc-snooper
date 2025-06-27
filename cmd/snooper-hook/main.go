@@ -44,7 +44,6 @@ type TestClient struct {
 	// Module state
 	moduleID      uint64
 	binaryReaders map[uint64]io.ReadCloser
-	binaryMu      sync.RWMutex
 }
 
 func main() {
@@ -100,23 +99,20 @@ func main() {
 		close(shutdownDone)
 	}()
 
-	select {
-	case <-shutdownDone:
-		logger.Info("Test client shutdown complete")
-	}
+	<-shutdownDone
+	logger.Info("Test client shutdown complete")
 }
 
 func parseFlags() *Config {
 	config := &Config{
 		Config: make(map[string]interface{}),
 	}
+	configStr := ""
 
 	flag.StringVar(&config.URL, "url", "ws://localhost:8080/_snooper/control", "WebSocket URL of the snooper control endpoint")
 	flag.StringVar(&config.ModuleType, "type", "request_snooper", "Module type (request_snooper, response_snooper, request_counter, response_tracer)")
 	flag.StringVar(&config.ModuleName, "name", "test-hook", "Module name")
 	flag.BoolVar(&config.Verbose, "verbose", false, "Enable verbose logging")
-
-	var configStr string
 	flag.StringVar(&configStr, "config", "{}", "Module configuration as JSON string")
 
 	flag.Parse()
@@ -133,6 +129,7 @@ func parseFlags() *Config {
 	}
 
 	valid := false
+
 	for _, t := range validTypes {
 		if config.ModuleType == t {
 			valid = true
@@ -183,9 +180,11 @@ func (c *TestClient) sendRequest(method string, data interface{}, binaryData []b
 	}
 
 	// Register pending request BEFORE sending
-	responseChan := make(chan *protocol.WSMessageWithBinary, 1)
 	c.requestMu.Lock()
+
+	responseChan := make(chan *protocol.WSMessageWithBinary, 1)
 	c.pendingRequests[requestID] = responseChan
+
 	c.requestMu.Unlock()
 
 	// Cleanup on exit
@@ -217,6 +216,7 @@ func (c *TestClient) sendRequest(method string, data interface{}, binaryData []b
 		if c.ctx.Err() != nil {
 			return nil, fmt.Errorf("context cancelled: %w", c.ctx.Err())
 		}
+
 		return nil, fmt.Errorf("request timeout")
 	}
 }
@@ -244,10 +244,12 @@ func (c *TestClient) RegisterModule() error {
 				return nil
 			}
 		}
+
 		if msg, ok := regResp["message"].(string); ok {
 			return fmt.Errorf("registration failed: %s", msg)
 		}
 	}
+
 	return fmt.Errorf("invalid registration response")
 }
 
@@ -256,6 +258,7 @@ func (c *TestClient) handleMessages() {
 	defer c.conn.Close()
 
 	var expectingBinary bool
+
 	var lastJSONMessage *protocol.WSMessage
 
 	// Set read deadline based on context to handle cancellation properly
@@ -278,16 +281,17 @@ func (c *TestClient) handleMessages() {
 				} else if !strings.Contains(err.Error(), "use of closed network connection") {
 					c.logger.WithError(err).Error("WebSocket read error")
 				}
+
 				c.cancel()
+
 				return
 			}
 		}
 
 		switch messageType {
 		case websocket.TextMessage:
-			//fmt.Println(string(data))
-
 			var msg protocol.WSMessage
+
 			if err := json.Unmarshal(data, &msg); err != nil {
 				c.logger.WithError(err).Debug("Failed to unmarshal JSON message")
 				return
@@ -308,7 +312,9 @@ func (c *TestClient) handleMessages() {
 					WSMessage:  lastJSONMessage,
 					BinaryData: data,
 				}
+
 				c.handleJSONMessage(msgWithBinary)
+
 				expectingBinary = false
 				lastJSONMessage = nil
 			} else {

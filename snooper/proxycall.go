@@ -74,12 +74,12 @@ func (callContext *ProxyCallContext) ID() uint64 {
 	return callContext.callIndex
 }
 
-func (callContext *ProxyCallContext) SetData(moduleId uint64, key string, value interface{}) {
-	callContext.data[fmt.Sprintf("%d:%s", moduleId, key)] = value
+func (callContext *ProxyCallContext) SetData(moduleID uint64, key string, value interface{}) {
+	callContext.data[fmt.Sprintf("%d:%s", moduleID, key)] = value
 }
 
-func (callContext *ProxyCallContext) GetData(moduleId uint64, key string) interface{} {
-	return callContext.data[fmt.Sprintf("%d:%s", moduleId, key)]
+func (callContext *ProxyCallContext) GetData(moduleID uint64, key string) interface{} {
+	return callContext.data[fmt.Sprintf("%d:%s", moduleID, key)]
 }
 
 func (s *Snooper) processProxyCall(w http.ResponseWriter, r *http.Request) error {
@@ -133,6 +133,7 @@ func (s *Snooper) processProxyCall(w http.ResponseWriter, r *http.Request) error
 
 	callStart := time.Now()
 	resp, err := client.Do(req)
+
 	if err != nil {
 		return fmt.Errorf("proxy request error: %w", err)
 	}
@@ -153,11 +154,13 @@ func (s *Snooper) processProxyCall(w http.ResponseWriter, r *http.Request) error
 	if isEventStream {
 		// passthru response headers
 		respH := w.Header()
+
 		for hk, hvs := range resp.Header {
 			for _, hv := range hvs {
 				respH.Add(hk, hv)
 			}
 		}
+
 		respH.Set("X-Accel-Buffering", "no")
 		w.WriteHeader(resp.StatusCode)
 	}
@@ -176,11 +179,13 @@ func (s *Snooper) processProxyCall(w http.ResponseWriter, r *http.Request) error
 	} else {
 		// passthru response headers (modules may modify them during streaming)
 		respH := w.Header()
+
 		for hk, hvs := range resp.Header {
 			for _, hv := range hvs {
 				respH.Add(hk, hv)
 			}
 		}
+
 		w.WriteHeader(resp.StatusCode)
 
 		// Create response body reader with module processing and logging

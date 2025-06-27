@@ -86,7 +86,8 @@ func (s *Snooper) logRequest(ctx *ProxyCallContext, req *http.Request, body io.R
 	contentEncoding := req.Header.Get("Content-Encoding")
 	contentType := req.Header.Get("Content-Type")
 
-	if contentEncoding == "gzip" {
+	switch contentEncoding {
+	case "gzip":
 		gzipReader, err := gzip.NewReader(body)
 		if err != nil {
 			s.logger.Warnf("failed unpacking gzip request body: %v", err)
@@ -95,7 +96,7 @@ func (s *Snooper) logRequest(ctx *ProxyCallContext, req *http.Request, body io.R
 		defer gzipReader.Close()
 
 		body = gzipReader
-	} else if contentEncoding == "br" {
+	case "br":
 		brotliReader := brotli.NewReader(body)
 		body = io.NopCloser(brotliReader)
 	}
@@ -106,7 +107,8 @@ func (s *Snooper) logRequest(ctx *ProxyCallContext, req *http.Request, body io.R
 	}
 
 	var bodyData []byte
-	var parsedData interface{}
+
+	var parsedData any
 
 	switch {
 	case req.ContentLength == 0:
@@ -123,12 +125,15 @@ func (s *Snooper) logRequest(ctx *ProxyCallContext, req *http.Request, body io.R
 		if beautifiedJSON := s.beautifyJSON(bodyData); len(beautifiedJSON) > 0 {
 			logFields["type"] = "json"
 			logFields["body"] = fmt.Sprintf("%v\n\n", string(beautifiedJSON))
+
 			// Store parsed JSON for module processing
-			json.Unmarshal(bodyData, &parsedData)
+			_ = json.Unmarshal(bodyData, &parsedData)
 		} else {
 			logFields["type"] = "unknown"
 			bodyBuf := make([]byte, len(bodyData)*2)
+
 			hex.Encode(bodyBuf, bodyData)
+
 			logFields["body"] = bodyBuf
 		}
 	}
@@ -143,7 +148,8 @@ func (s *Snooper) logResponse(ctx *ProxyCallContext, req *http.Request, rsp *htt
 	contentEncoding := rsp.Header.Get("Content-Encoding")
 	contentType := rsp.Header.Get("Content-Type")
 
-	if contentEncoding == "gzip" {
+	switch contentEncoding {
+	case "gzip":
 		gzipReader, err := gzip.NewReader(body)
 		if err != nil {
 			s.logger.Warnf("failed unpacking gzip response body: %v", err)
@@ -152,7 +158,7 @@ func (s *Snooper) logResponse(ctx *ProxyCallContext, req *http.Request, rsp *htt
 		defer gzipReader.Close()
 
 		body = gzipReader
-	} else if contentEncoding == "br" {
+	case "br":
 		brotliReader := brotli.NewReader(body)
 		body = io.NopCloser(brotliReader)
 	}
@@ -169,7 +175,8 @@ func (s *Snooper) logResponse(ctx *ProxyCallContext, req *http.Request, rsp *htt
 	}
 
 	var bodyData []byte
-	var parsedData interface{}
+
+	var parsedData any
 
 	switch {
 	case rsp.ContentLength == 0:
@@ -186,7 +193,7 @@ func (s *Snooper) logResponse(ctx *ProxyCallContext, req *http.Request, rsp *htt
 			logFields["type"] = "json"
 			logFields["body"] = fmt.Sprintf("%v\n\n", string(beautifiedJSON))
 			// Store parsed JSON for module processing
-			json.Unmarshal(bodyData, &parsedData)
+			_ = json.Unmarshal(bodyData, &parsedData)
 		} else {
 			logFields["type"] = "unknown"
 			bodyBuf := make([]byte, len(bodyData)*2)
@@ -237,6 +244,7 @@ func (s *Snooper) logEventResponse(ctx *ProxyCallContext, req *http.Request, rsp
 	logFields["body"] = body
 
 	var parsedEventData interface{}
+
 	if len(evt) >= 2 {
 		bodyJSON, err := json.Marshal(evt)
 		if err != nil {
@@ -287,7 +295,7 @@ func (s *Snooper) processRequestModules(ctx *ProxyCallContext, req *http.Request
 }
 
 // processResponseModules processes response data through modules using already parsed/decoded data
-func (s *Snooper) processResponseModules(ctx *ProxyCallContext, req *http.Request, rsp *http.Response, bodyData []byte, parsedData interface{}, contentType string, callDuration time.Duration) {
+func (s *Snooper) processResponseModules(ctx *ProxyCallContext, _ *http.Request, rsp *http.Response, bodyData []byte, parsedData interface{}, contentType string, callDuration time.Duration) {
 	if s.moduleManager == nil || !s.moduleManager.IsEnabled() {
 		return
 	}
@@ -320,7 +328,7 @@ func (s *Snooper) processResponseModules(ctx *ProxyCallContext, req *http.Reques
 }
 
 // processEventModules processes event stream data through modules using already parsed event data
-func (s *Snooper) processEventModules(ctx *ProxyCallContext, req *http.Request, rsp *http.Response, bodyData []byte, parsedData interface{}) {
+func (s *Snooper) processEventModules(ctx *ProxyCallContext, _ *http.Request, rsp *http.Response, bodyData []byte, parsedData interface{}) {
 	if s.moduleManager == nil || !s.moduleManager.IsEnabled() {
 		return
 	}

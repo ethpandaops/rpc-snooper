@@ -60,7 +60,7 @@ func NewManager(logger logrus.FieldLogger) *Manager {
 		logger:        logger,
 		filterEngine:  NewFilterEngine(logger),
 		upgrader: websocket.Upgrader{
-			CheckOrigin: func(r *http.Request) bool {
+			CheckOrigin: func(_ *http.Request) bool {
 				return true
 			},
 		},
@@ -69,23 +69,26 @@ func NewManager(logger logrus.FieldLogger) *Manager {
 
 // Manager methods that delegate to ModuleManager with filterEngine
 func (m *Manager) ProcessRequest(ctx *types.RequestContext) (*types.RequestContext, error) {
-	if !m.ModuleManager.IsEnabled() {
+	if !m.IsEnabled() {
 		return ctx, nil
 	}
 
-	m.ModuleManager.mu.RLock()
-	modules := make([]types.Module, 0, len(m.ModuleManager.modules))
-	for _, module := range m.ModuleManager.modules {
+	m.mu.RLock()
+	modules := make([]types.Module, 0, len(m.modules))
+
+	for _, module := range m.modules {
 		modules = append(modules, module)
 	}
-	m.ModuleManager.mu.RUnlock()
+
+	m.mu.RUnlock()
 
 	for _, module := range modules {
-		if m.ModuleManager.shouldProcessRequest(module, ctx, m.filterEngine) {
+		if m.shouldProcessRequest(module, ctx, m.filterEngine) {
 			newCtx, err := module.OnRequest(ctx)
 			if err != nil {
 				return ctx, err
 			}
+
 			if newCtx != nil {
 				ctx = newCtx
 			}
@@ -96,23 +99,26 @@ func (m *Manager) ProcessRequest(ctx *types.RequestContext) (*types.RequestConte
 }
 
 func (m *Manager) ProcessResponse(ctx *types.ResponseContext) (*types.ResponseContext, error) {
-	if !m.ModuleManager.IsEnabled() {
+	if !m.IsEnabled() {
 		return ctx, nil
 	}
 
-	m.ModuleManager.mu.RLock()
-	modules := make([]types.Module, 0, len(m.ModuleManager.modules))
-	for _, module := range m.ModuleManager.modules {
+	m.mu.RLock()
+	modules := make([]types.Module, 0, len(m.modules))
+
+	for _, module := range m.modules {
 		modules = append(modules, module)
 	}
-	m.ModuleManager.mu.RUnlock()
+
+	m.mu.RUnlock()
 
 	for _, module := range modules {
-		if m.ModuleManager.shouldProcessResponse(module, ctx, m.filterEngine) {
+		if m.shouldProcessResponse(module, ctx, m.filterEngine) {
 			newCtx, err := module.OnResponse(ctx)
 			if err != nil {
 				return ctx, err
 			}
+
 			if newCtx != nil {
 				ctx = newCtx
 			}
@@ -125,6 +131,7 @@ func (m *Manager) ProcessResponse(ctx *types.ResponseContext) (*types.ResponseCo
 func (cm *ConnectionManager) WaitForResponse(requestID uint64) (*protocol.WSMessageWithBinary, error) {
 	responseChan := make(chan *protocol.WSMessageWithBinary, 1)
 	cm.RegisterPendingRequest(requestID, responseChan)
+
 	defer cm.UnregisterPendingRequest(requestID)
 
 	select {
@@ -142,9 +149,11 @@ func (cm *ConnectionManager) GenerateRequestID() uint64 {
 func (cm *ConnectionManager) RegisterPendingRequest(requestID uint64, responseChan chan *protocol.WSMessageWithBinary) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
+
 	if cm.pendingRequests == nil {
 		cm.pendingRequests = make(map[uint64]chan *protocol.WSMessageWithBinary)
 	}
+
 	cm.pendingRequests[requestID] = responseChan
 }
 
@@ -158,15 +167,6 @@ func (cm *ConnectionManager) SendMessage(msg *protocol.WSMessage) error {
 	cm.writeMu.Lock()
 	defer cm.writeMu.Unlock()
 
-	/*
-		json, err := json.Marshal(msg)
-		if err != nil {
-			return fmt.Errorf("failed to marshal message: %w", err)
-		}
-
-		fmt.Println(string(json))
-		return cm.conn.WriteMessage(websocket.TextMessage, json)
-	*/
 	return cm.conn.WriteJSON(msg)
 }
 
@@ -194,6 +194,7 @@ func (cm *ConnectionManager) Close() {
 		close(cm.done)
 		cm.closed = true
 	}
+
 	cm.conn.Close()
 }
 
@@ -206,6 +207,7 @@ func (mm *ModuleManager) GenerateModuleID() uint64 {
 func (mm *ModuleManager) IsEnabled() bool {
 	mm.mu.RLock()
 	defer mm.mu.RUnlock()
+
 	return mm.enabled
 }
 
@@ -299,6 +301,7 @@ func (mm *ModuleManager) parseFilter(config map[string]interface{}) *types.Filte
 
 	if contentTypes, ok := config["content_types"].([]interface{}); ok {
 		filter.ContentTypes = make([]string, len(contentTypes))
+
 		for i, ct := range contentTypes {
 			if str, ok := ct.(string); ok {
 				filter.ContentTypes[i] = str
@@ -312,6 +315,7 @@ func (mm *ModuleManager) parseFilter(config map[string]interface{}) *types.Filte
 
 	if methods, ok := config["methods"].([]interface{}); ok {
 		filter.Methods = make([]string, len(methods))
+
 		for i, method := range methods {
 			if str, ok := method.(string); ok {
 				filter.Methods[i] = str
@@ -321,6 +325,7 @@ func (mm *ModuleManager) parseFilter(config map[string]interface{}) *types.Filte
 
 	if statusCodes, ok := config["status_codes"].([]interface{}); ok {
 		filter.StatusCodes = make([]int, len(statusCodes))
+
 		for i, code := range statusCodes {
 			if num, ok := code.(float64); ok {
 				filter.StatusCodes[i] = int(num)
@@ -356,7 +361,9 @@ func (m *Manager) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		m.mu.Unlock()
 
 		for _, moduleID := range connMgr.modules {
-			m.UnregisterModule(moduleID)
+			if err := m.UnregisterModule(moduleID); err != nil {
+				m.logger.Warnf("failed to unregister module %d: %v", moduleID, err)
+			}
 		}
 
 		connMgr.Close()
@@ -374,6 +381,7 @@ func (m *Manager) handleConnection(connMgr *ConnectionManager) {
 	defer connMgr.Close()
 
 	var expectingBinary bool
+
 	var lastJSONMessage *protocol.WSMessage
 
 	for {
@@ -384,12 +392,14 @@ func (m *Manager) handleConnection(connMgr *ConnectionManager) {
 			} else {
 				m.logger.WithError(err).Error("WebSocket read error")
 			}
+
 			return
 		}
 
 		switch messageType {
 		case websocket.TextMessage:
 			var msg protocol.WSMessage
+
 			if err := json.Unmarshal(data, &msg); err != nil {
 				m.logger.WithError(err).Debug("Failed to unmarshal JSON message")
 				return
@@ -404,6 +414,7 @@ func (m *Manager) handleConnection(connMgr *ConnectionManager) {
 		case websocket.BinaryMessage:
 			if expectingBinary && lastJSONMessage != nil {
 				m.handleJSONMessage(connMgr, lastJSONMessage, data)
+
 				expectingBinary = false
 				lastJSONMessage = nil
 			} else {
@@ -437,7 +448,7 @@ func (m *Manager) handleResponse(connMgr *ConnectionManager, msg *protocol.WSMes
 	}
 }
 
-func (m *Manager) handleRequest(connMgr *ConnectionManager, msg *protocol.WSMessage, binaryData []byte) {
+func (m *Manager) handleRequest(connMgr *ConnectionManager, msg *protocol.WSMessage, _ []byte) {
 	switch msg.Method {
 	case "register_module":
 		m.handleModuleRegistration(connMgr, msg)
@@ -458,28 +469,22 @@ func (m *Manager) handleModuleRegistration(connMgr *ConnectionManager, msg *prot
 	moduleID := m.GenerateModuleID()
 
 	var module types.Module
-	var err error
 
 	switch req.Type {
 	case "request_snooper":
-		module, err = m.createRequestSnooper(moduleID, connMgr, req.Config)
+		module = builtin.NewRequestSnooper(moduleID, connMgr)
 	case "response_snooper":
-		module, err = m.createResponseSnooper(moduleID, connMgr, req.Config)
+		module = builtin.NewResponseSnooper(moduleID, connMgr)
 	case "request_counter":
-		module, err = m.createRequestCounter(moduleID, connMgr, req.Config)
+		module = builtin.NewRequestCounter(moduleID, connMgr)
 	case "response_tracer":
-		module, err = m.createResponseTracer(moduleID, connMgr, req.Config)
+		module = builtin.NewResponseTracer(moduleID, connMgr)
 	default:
 		m.sendErrorResponse(connMgr, msg, fmt.Sprintf("Unknown module type: %s", req.Type))
 		return
 	}
 
-	if err != nil {
-		m.sendErrorResponse(connMgr, msg, fmt.Sprintf("Failed to create module: %v", err))
-		return
-	}
-
-	filterConfig := m.ModuleManager.parseFilterConfig(req.Config)
+	filterConfig := m.parseFilterConfig(req.Config)
 
 	// Compile the filters if they have JSON queries
 	if filterConfig != nil {
@@ -489,6 +494,7 @@ func (m *Manager) handleModuleRegistration(connMgr *ConnectionManager, msg *prot
 				return
 			}
 		}
+
 		if filterConfig.ResponseFilter != nil && filterConfig.ResponseFilter.JSONQuery != "" {
 			if err := m.filterEngine.CompileFilter(filterConfig.ResponseFilter); err != nil {
 				m.sendErrorResponse(connMgr, msg, fmt.Sprintf("Failed to compile response filter: %v", err))
@@ -497,7 +503,10 @@ func (m *Manager) handleModuleRegistration(connMgr *ConnectionManager, msg *prot
 		}
 	}
 
-	module.Configure(req.Config)
+	if err := module.Configure(req.Config); err != nil {
+		m.sendErrorResponse(connMgr, msg, fmt.Sprintf("Failed to configure module: %v", err))
+		return
+	}
 
 	if err := m.RegisterModule(module, filterConfig); err != nil {
 		m.sendErrorResponse(connMgr, msg, fmt.Sprintf("Failed to register module: %v", err))
@@ -552,11 +561,12 @@ func (m *Manager) handleModuleUnregistration(connMgr *ConnectionManager, msg *pr
 	m.logger.WithField("module_id", moduleID).Info("Module unregistered")
 }
 
-func (m *Manager) parseMessageData(data interface{}, target interface{}) error {
+func (m *Manager) parseMessageData(data, target interface{}) error {
 	dataBytes, err := json.Marshal(data)
 	if err != nil {
 		return err
 	}
+
 	return json.Unmarshal(dataBytes, target)
 }
 
@@ -585,32 +595,4 @@ func (m *Manager) sendErrorResponse(connMgr *ConnectionManager, originalMsg *pro
 	if err := connMgr.SendMessage(response); err != nil {
 		m.logger.WithError(err).Error("Failed to send WebSocket error response")
 	}
-}
-
-func (m *Manager) createRequestSnooper(id uint64, connMgr *ConnectionManager, config map[string]interface{}) (types.Module, error) {
-	return &builtin.RequestSnooper{
-		Id:      id,
-		ConnMgr: connMgr,
-	}, nil
-}
-
-func (m *Manager) createResponseSnooper(id uint64, connMgr *ConnectionManager, config map[string]interface{}) (types.Module, error) {
-	return &builtin.ResponseSnooper{
-		Id:      id,
-		ConnMgr: connMgr,
-	}, nil
-}
-
-func (m *Manager) createRequestCounter(id uint64, connMgr *ConnectionManager, config map[string]interface{}) (types.Module, error) {
-	return &builtin.RequestCounter{
-		Id:      id,
-		ConnMgr: connMgr,
-	}, nil
-}
-
-func (m *Manager) createResponseTracer(id uint64, connMgr *ConnectionManager, config map[string]interface{}) (types.Module, error) {
-	return &builtin.ResponseTracer{
-		Id:      id,
-		ConnMgr: connMgr,
-	}, nil
 }

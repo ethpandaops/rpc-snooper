@@ -10,35 +10,43 @@ import (
 )
 
 type RequestCounter struct {
-	Id      uint64
-	ConnMgr types.ConnectionManager
-	Count   int64
+	id      uint64
+	connMgr types.ConnectionManager
+	count   int64
+}
+
+func NewRequestCounter(id uint64, connMgr types.ConnectionManager) *RequestCounter {
+	return &RequestCounter{
+		id:      id,
+		connMgr: connMgr,
+	}
 }
 
 func (rc *RequestCounter) ID() uint64 {
-	return rc.Id
+	return rc.id
 }
 
 func (rc *RequestCounter) OnRequest(ctx *types.RequestContext) (*types.RequestContext, error) {
-	count := atomic.AddInt64(&rc.Count, 1)
+	count := atomic.AddInt64(&rc.count, 1)
 
 	counterEvent := protocol.CounterEvent{
-		ModuleID:    rc.Id,
+		ModuleID:    rc.id,
 		Count:       count,
 		RequestType: ctx.Method,
 	}
 
 	msg := &protocol.WSMessage{
-		ModuleID:  rc.Id,
+		ModuleID:  rc.id,
 		Method:    "counter_event",
 		Data:      counterEvent,
 		Timestamp: time.Now().UnixNano(),
 	}
 
-	if err := rc.ConnMgr.SendMessage(msg); err != nil {
+	if err := rc.connMgr.SendMessage(msg); err != nil {
 		// Log error but don't fail the request processing
 		return ctx, fmt.Errorf("failed to send counter event: %w", err)
 	}
+
 	return ctx, nil
 }
 
@@ -46,7 +54,7 @@ func (rc *RequestCounter) OnResponse(ctx *types.ResponseContext) (*types.Respons
 	return ctx, nil
 }
 
-func (rc *RequestCounter) Configure(config map[string]interface{}) error {
+func (rc *RequestCounter) Configure(_ map[string]interface{}) error {
 	return nil
 }
 
@@ -55,5 +63,5 @@ func (rc *RequestCounter) Close() error {
 }
 
 func (rc *RequestCounter) GetCount() int64 {
-	return atomic.LoadInt64(&rc.Count)
+	return atomic.LoadInt64(&rc.count)
 }

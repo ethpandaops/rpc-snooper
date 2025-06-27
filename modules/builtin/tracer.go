@@ -12,27 +12,34 @@ import (
 )
 
 type ResponseTracer struct {
-	Id             uint64
-	ConnMgr        types.ConnectionManager
+	id             uint64
+	connMgr        types.ConnectionManager
 	requestSelect  string
 	responseSelect string
 	requestQuery   *gojq.Query
 	responseQuery  *gojq.Query
 }
 
+func NewResponseTracer(id uint64, connMgr types.ConnectionManager) *ResponseTracer {
+	return &ResponseTracer{
+		id:      id,
+		connMgr: connMgr,
+	}
+}
+
 func (rt *ResponseTracer) ID() uint64 {
-	return rt.Id
+	return rt.id
 }
 
 func (rt *ResponseTracer) OnRequest(ctx *types.RequestContext) (*types.RequestContext, error) {
-	ctx.CallCtx.SetData(rt.Id, "wants_response", true)
-	ctx.CallCtx.SetData(rt.Id, "request_size", len(ctx.BodyBytes))
+	ctx.CallCtx.SetData(rt.id, "wants_response", true)
+	ctx.CallCtx.SetData(rt.id, "request_size", len(ctx.BodyBytes))
 
 	// Extract request data if query is configured
 	if rt.requestQuery != nil && strings.Contains(ctx.ContentType, "json") {
 		requestData := rt.extractData(rt.requestQuery, ctx.Body)
 		if requestData != nil {
-			ctx.CallCtx.SetData(rt.Id, "request_extracted_data", requestData)
+			ctx.CallCtx.SetData(rt.id, "request_extracted_data", requestData)
 		}
 	}
 
@@ -41,19 +48,20 @@ func (rt *ResponseTracer) OnRequest(ctx *types.RequestContext) (*types.RequestCo
 
 func (rt *ResponseTracer) OnResponse(ctx *types.ResponseContext) (*types.ResponseContext, error) {
 	duration := ctx.Duration
-	requestSize, _ := ctx.CallCtx.GetData(rt.Id, "request_size").(int)
+	requestSize, _ := ctx.CallCtx.GetData(rt.id, "request_size").(int)
 
 	// Extract response data if query is configured
-	var responseData interface{}
+	var responseData any
+
 	if rt.responseQuery != nil && strings.Contains(ctx.ContentType, "json") {
 		responseData = rt.extractData(rt.responseQuery, ctx.Body)
 	}
 
 	// Get previously extracted request data
-	requestData := ctx.CallCtx.GetData(rt.Id, "request_extracted_data")
+	requestData := ctx.CallCtx.GetData(rt.id, "request_extracted_data")
 
 	tracerEvent := &protocol.TracerEvent{
-		ModuleID:     rt.Id,
+		ModuleID:     rt.id,
 		RequestID:    ctx.CallCtx.ID(),
 		Duration:     duration.Milliseconds(),
 		ResponseSize: int64(len(ctx.BodyBytes)),
@@ -64,16 +72,17 @@ func (rt *ResponseTracer) OnResponse(ctx *types.ResponseContext) (*types.Respons
 	}
 
 	msg := &protocol.WSMessage{
-		ModuleID:  rt.Id,
+		ModuleID:  rt.id,
 		Method:    "tracer_event",
 		Data:      tracerEvent,
 		Timestamp: time.Now().UnixNano(),
 	}
 
-	if err := rt.ConnMgr.SendMessage(msg); err != nil {
+	if err := rt.connMgr.SendMessage(msg); err != nil {
 		// Log error but don't fail the response processing
 		return ctx, fmt.Errorf("failed to send tracer event: %w", err)
 	}
+
 	return ctx, nil
 }
 
@@ -81,20 +90,24 @@ func (rt *ResponseTracer) Configure(config map[string]interface{}) error {
 	// Parse request_select if provided
 	if requestSelect, ok := config["request_select"].(string); ok && requestSelect != "" {
 		rt.requestSelect = requestSelect
+
 		query, err := gojq.Parse(requestSelect)
 		if err != nil {
 			return fmt.Errorf("failed to parse request_select query: %w", err)
 		}
+
 		rt.requestQuery = query
 	}
 
 	// Parse response_select if provided
 	if responseSelect, ok := config["response_select"].(string); ok && responseSelect != "" {
 		rt.responseSelect = responseSelect
+
 		query, err := gojq.Parse(responseSelect)
 		if err != nil {
 			return fmt.Errorf("failed to parse response_select query: %w", err)
 		}
+
 		rt.responseQuery = query
 	}
 
@@ -106,9 +119,9 @@ func (rt *ResponseTracer) Close() error {
 }
 
 // extractData runs a gojq query against the provided data and returns the result
-func (rt *ResponseTracer) extractData(query *gojq.Query, body interface{}) interface{} {
+func (rt *ResponseTracer) extractData(query *gojq.Query, body any) any {
 	// Convert body to JSON if it's not already
-	var data interface{}
+	var data any
 	switch v := body.(type) {
 	case []byte:
 		if err := json.Unmarshal(v, &data); err != nil {
@@ -124,24 +137,30 @@ func (rt *ResponseTracer) extractData(query *gojq.Query, body interface{}) inter
 
 	// Run the query and collect all results
 	iter := query.Run(data)
-	var results []interface{}
+
+	var results []any
+
 	for {
 		v, ok := iter.Next()
 		if !ok {
 			break
 		}
+
 		if _, ok := v.(error); ok {
 			// Skip errors
 			continue
 		}
+
 		results = append(results, v)
 	}
 
 	// Return based on number of results
-	if len(results) == 0 {
+	switch {
+	case len(results) == 0:
 		return nil
-	} else if len(results) == 1 {
+	case len(results) == 1:
 		return results[0]
+	default:
+		return results
 	}
-	return results
 }
