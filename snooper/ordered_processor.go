@@ -1,8 +1,8 @@
 package snooper
 
 import (
-	"context"
 	"sync"
+	"time"
 )
 
 type OrderedProcessor struct {
@@ -44,7 +44,7 @@ func (op *OrderedProcessor) GetNextSequence() uint64 {
 
 // WaitForSequence waits for the given sequence number to be processed.
 // Returns true if sequence was reached, false if context was cancelled.
-func (op *OrderedProcessor) WaitForSequence(ctx context.Context, sequence uint64) bool {
+func (op *OrderedProcessor) WaitForSequence(sequence uint64) bool {
 	op.mutex.Lock()
 
 	// Skip any completed sequences and advance nextSequence
@@ -65,10 +65,10 @@ func (op *OrderedProcessor) WaitForSequence(ctx context.Context, sequence uint64
 	select {
 	case <-waiter:
 		return true
-	case <-ctx.Done():
-		return false
 	case <-op.stopChan:
 		return false
+	case <-time.After(5 * time.Second):
+		return true
 	}
 }
 

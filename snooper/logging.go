@@ -154,7 +154,7 @@ func (s *Snooper) logRequest(ctx *ProxyCallContext, req *http.Request, body io.R
 	}
 
 	// Wait for our turn in the processing sequence
-	if !s.orderedProcessor.WaitForSequence(ctx.context, seq) {
+	if !s.orderedProcessor.WaitForSequence(seq) {
 		return // Context was cancelled
 	}
 
@@ -229,7 +229,7 @@ func (s *Snooper) logResponse(ctx *ProxyCallContext, req *http.Request, rsp *htt
 	}
 
 	// Wait for our turn in the processing sequence
-	if !s.orderedProcessor.WaitForSequence(ctx.context, seq) {
+	if !s.orderedProcessor.WaitForSequence(seq) {
 		return // Context was cancelled
 	}
 
@@ -293,7 +293,7 @@ func (s *Snooper) logEventResponse(ctx *ProxyCallContext, req *http.Request, rsp
 	}
 
 	// Wait for our turn in the processing sequence
-	if !s.orderedProcessor.WaitForSequence(ctx.context, seq) {
+	if !s.orderedProcessor.WaitForSequence(seq) {
 		return // Context was cancelled
 	}
 
