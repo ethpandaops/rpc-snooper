@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
@@ -150,9 +152,23 @@ func (c *TestClient) Connect() error {
 		return fmt.Errorf("invalid URL: %w", err)
 	}
 
+	// Extract credentials if present
+	var headers http.Header
+	if u.User != nil {
+		headers = make(http.Header)
+		username := u.User.Username()
+		password, _ := u.User.Password()
+		auth := username + ":" + password
+		basicAuth := "Basic " + base64.StdEncoding.EncodeToString([]byte(auth))
+		headers.Set("Authorization", basicAuth)
+
+		// Remove credentials from URL
+		u.User = nil
+	}
+
 	c.logger.WithField("url", c.config.URL).Info("Connecting to snooper control endpoint...")
 
-	conn, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
+	conn, _, err := websocket.DefaultDialer.Dial(u.String(), headers)
 	if err != nil {
 		return fmt.Errorf("websocket dial failed: %w", err)
 	}
