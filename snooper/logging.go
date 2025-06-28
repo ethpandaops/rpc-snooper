@@ -83,6 +83,12 @@ func (r *logReadCloser) Close() error {
 }
 
 func (s *Snooper) logRequest(ctx *ProxyCallContext, req *http.Request, body io.ReadCloser) {
+	// Generate sequence number for this request processing
+	seq := s.orderedProcessor.GetNextSequence()
+
+	defer s.orderedProcessor.CompleteSequence(seq)
+
+	// Parse request body
 	contentEncoding := req.Header.Get("Content-Encoding")
 	contentType := req.Header.Get("Content-Type")
 
@@ -138,8 +144,6 @@ func (s *Snooper) logRequest(ctx *ProxyCallContext, req *http.Request, body io.R
 		}
 	}
 
-	s.logger.WithFields(logFields).Infof("REQUEST #%v: %v %v", ctx.callIndex, req.Method, req.URL.String())
-
 	ctx.SetData(0, "request_size", len(bodyData))
 
 	// Extract and store jrpc_method for metrics collection if metrics are enabled
@@ -149,11 +153,24 @@ func (s *Snooper) logRequest(ctx *ProxyCallContext, req *http.Request, body io.R
 		}
 	}
 
-	// Process through modules using the already parsed/decoded data
+	// Wait for our turn in the processing sequence
+	if !s.orderedProcessor.WaitForSequence(ctx.context, seq) {
+		return // Context was cancelled
+	}
+
+	// Process modules in order
 	s.processRequestModules(ctx, req, bodyData, parsedData, contentType)
+
+	s.logger.WithFields(logFields).Infof("REQUEST #%v: %v %v", ctx.callIndex, req.Method, req.URL.String())
 }
 
 func (s *Snooper) logResponse(ctx *ProxyCallContext, req *http.Request, rsp *http.Response, body io.ReadCloser, callDuration time.Duration) {
+	// Generate sequence number for this response processing
+	seq := s.orderedProcessor.GetNextSequence()
+
+	defer s.orderedProcessor.CompleteSequence(seq)
+
+	// Parse response body
 	contentEncoding := rsp.Header.Get("Content-Encoding")
 	contentType := rsp.Header.Get("Content-Type")
 
@@ -211,13 +228,24 @@ func (s *Snooper) logResponse(ctx *ProxyCallContext, req *http.Request, rsp *htt
 		}
 	}
 
-	s.logger.WithFields(logFields).Infof("RESPONSE #%v: %v %v", ctx.callIndex, req.Method, req.URL.String())
+	// Wait for our turn in the processing sequence
+	if !s.orderedProcessor.WaitForSequence(ctx.context, seq) {
+		return // Context was cancelled
+	}
 
-	// Process through modules using the already parsed/decoded data
+	// Process modules in order
 	s.processResponseModules(ctx, req, rsp, bodyData, parsedData, contentType, callDuration)
+
+	s.logger.WithFields(logFields).Infof("RESPONSE #%v: %v %v", ctx.callIndex, req.Method, req.URL.String())
 }
 
 func (s *Snooper) logEventResponse(ctx *ProxyCallContext, req *http.Request, rsp *http.Response, body []byte) {
+	// Generate sequence number for this event processing
+	seq := s.orderedProcessor.GetNextSequence()
+
+	defer s.orderedProcessor.CompleteSequence(seq)
+
+	// Parse event body
 	logFields := logrus.Fields{
 		"color": color.FgGreen,
 	}
@@ -264,7 +292,12 @@ func (s *Snooper) logEventResponse(ctx *ProxyCallContext, req *http.Request, rsp
 		}
 	}
 
-	// Process through modules using the already parsed event data
+	// Wait for our turn in the processing sequence
+	if !s.orderedProcessor.WaitForSequence(ctx.context, seq) {
+		return // Context was cancelled
+	}
+
+	// Process modules in order
 	s.processEventModules(ctx, req, rsp, body, parsedEventData)
 
 	s.logger.WithFields(logFields).Infof("RESPONSE-EVENT %v %v (status: %v, body: %v)", req.Method, req.URL.EscapedPath(), rsp.StatusCode, len(body))

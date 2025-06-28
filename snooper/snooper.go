@@ -34,6 +34,8 @@ type Snooper struct {
 
 	callIndexCounter uint64
 	callIndexMutex   sync.Mutex
+
+	orderedProcessor *OrderedProcessor
 }
 
 func NewSnooper(target string, logger logrus.FieldLogger) (*Snooper, error) {
@@ -42,13 +44,23 @@ func NewSnooper(target string, logger logrus.FieldLogger) (*Snooper, error) {
 		return nil, err
 	}
 
-	return &Snooper{
+	snooper := &Snooper{
 		CallTimeout: 60 * time.Second,
 
 		target:        targetURL,
 		logger:        logger,
 		moduleManager: modules.NewManager(logger),
-	}, nil
+	}
+
+	snooper.orderedProcessor = NewOrderedProcessor(snooper)
+
+	return snooper, nil
+}
+
+func (s *Snooper) Shutdown() {
+	if s.orderedProcessor != nil {
+		s.orderedProcessor.Stop()
+	}
 }
 
 func (s *Snooper) StartServer(host string, port int, noAPI bool) error {
