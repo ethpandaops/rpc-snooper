@@ -36,6 +36,10 @@ type Snooper struct {
 	callIndexMutex   sync.Mutex
 
 	orderedProcessor *OrderedProcessor
+
+	// Flow control
+	flowEnabled bool
+	flowMutex   sync.RWMutex
 }
 
 func NewSnooper(target string, logger logrus.FieldLogger) (*Snooper, error) {
@@ -50,6 +54,7 @@ func NewSnooper(target string, logger logrus.FieldLogger) (*Snooper, error) {
 		target:        targetURL,
 		logger:        logger,
 		moduleManager: modules.NewManager(logger),
+		flowEnabled:   true, // Start with flow enabled by default
 	}
 
 	snooper.orderedProcessor = NewOrderedProcessor(snooper)

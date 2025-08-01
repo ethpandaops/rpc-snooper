@@ -5,6 +5,7 @@
 ## Features
 
 - **Request Forwarding:** Forwards all RPC requests to the specified target while logging the request and response details.
+- **Flow Control API:** Start/stop proxy forwarding via REST API endpoints.
 - **Internal API:** Exposes an internal API for basic control of the proxy, such as temporarily stopping the forwarding of requests/responses.
 - **CLI Support:** Includes several command-line options for customizing the proxy's behavior.
 
@@ -51,14 +52,160 @@ Usage:
 ./snooper [options] <target>
 
 Options:
-  -b, --bind-address string   Address to bind to and listen for incoming requests. (default "127.0.0.1")
-  -h, --help                  Run with verbose output
-      --no-api                Do not provide management REST api
-      --no-color              Do not use terminal colors in output
-  -p, --port int              Port to listen for incoming requests. (default 3000)
-  -v, --verbose               Run with verbose output
+  -b, --bind-address string   Address to bind to and listen for incoming requests (default "127.0.0.1")
+  -h, --help                  Show help information
+      --api-bind string       Address to bind for API endpoints (default "0.0.0.0")
+      --api-port int          Optional separate port for API endpoints
+      --api-auth string       Authentication for API endpoints (format: user:pass,user2:pass2,...)
+      --metrics-bind string   Address to bind for metrics endpoint (default "127.0.0.1")
+      --metrics-port int      Port for Prometheus metrics endpoint
+      --no-api                Disable management REST API
+      --no-color              Disable terminal colors in output
+  -p, --port int              Port to listen for incoming requests (default 3000)
+  -v, --verbose               Enable verbose output
   -V, --version               Print version information
 ```
+
+## API Reference
+
+The snooper exposes several API endpoints under the `/_snooper/` prefix for controlling and monitoring the proxy.
+
+### Flow Control API
+
+Control the proxy forwarding behavior:
+
+#### GET `/_snooper/status`
+Get the current flow control status.
+
+**Response:**
+```json
+{
+  "status": "success",
+  "enabled": true,
+  "message": "Flow is enabled"
+}
+```
+
+#### POST `/_snooper/start`
+Enable proxy forwarding (allows requests to be forwarded to target).
+
+**Response:**
+```json
+{
+  "status": "success", 
+  "message": "Flow started",
+  "enabled": true
+}
+```
+
+#### POST `/_snooper/stop`
+Disable proxy forwarding (blocks requests with 503 Service Unavailable).
+
+**Response:**
+```json
+{
+  "status": "success",
+  "message": "Flow stopped", 
+  "enabled": false
+}
+```
+
+**Example Usage:**
+```bash
+# Check current status
+curl http://localhost:3000/_snooper/status
+
+# Stop forwarding requests
+curl -X POST http://localhost:3000/_snooper/stop
+
+# Resume forwarding requests  
+curl -X POST http://localhost:3000/_snooper/start
+```
+
+### WebSocket Control API
+
+WebSocket connection available at `/_snooper/control` for advanced module management and real-time monitoring.
+
+### Metrics API
+
+When `--metrics-port` is specified, Prometheus metrics are available at `/metrics`:
+
+```bash
+# Start with metrics enabled
+./snooper --metrics-port 9090 http://localhost:8545
+
+# Access metrics
+curl http://localhost:9090/metrics
+```
+
+**Available Metrics:**
+- Go runtime metrics (garbage collection, memory usage, etc.)
+- HTTP request/response metrics (when processing requests)
+
+## Common Usage Scenarios
+
+### Basic Proxy with Flow Control
+```bash
+# Start the snooper proxy
+./snooper -p 3000 http://localhost:8545
+
+# Your RPC client connects to localhost:3000
+# All requests are forwarded to localhost:8545
+
+# Temporarily stop forwarding (useful for maintenance)
+curl -X POST http://localhost:3000/_snooper/stop
+
+# Resume forwarding
+curl -X POST http://localhost:3000/_snooper/start
+```
+
+### Authenticated API Access
+```bash
+# Start with API authentication on separate port
+./snooper --api-auth admin:secret123 --api-port 3001 http://localhost:8545
+
+# Access API with authentication
+curl -u admin:secret123 http://localhost:3001/_snooper/status
+curl -u admin:secret123 -X POST http://localhost:3001/_snooper/stop
+```
+
+### Multiple Services Setup
+```bash
+# Start with separate API, metrics, and main proxy ports
+./snooper -p 3000 --api-port 3001 --metrics-port 9090 http://localhost:8545
+
+# Main proxy: http://localhost:3000/
+# API endpoints: http://localhost:3000/_snooper/* AND http://localhost:3001/_snooper/*
+# Metrics: http://localhost:9090/metrics
+```
+
+### Disable API Completely
+```bash
+# Start without any management API
+./snooper --no-api -p 3000 http://localhost:8545
+
+# Only proxy functionality available, no /_snooper/ endpoints
+```
+
+### Error Responses
+
+When flow is disabled, all proxy requests return:
+```json
+{
+  "status": "error",
+  "message": "Proxy flow is currently disabled"
+}
+```
+**HTTP Status:** `503 Service Unavailable`
+
+### Authentication Required Response
+```json
+{
+  "status": "error", 
+  "message": "Unauthorized"
+}
+```
+**HTTP Status:** `401 Unauthorized`
 
 ## Contributing
 
