@@ -25,7 +25,7 @@ func (api *API) initRouter(router *mux.Router) {
 	router.PathPrefix("/").Handler(http.DefaultServeMux)
 }
 
-func (api *API) handleStart(w http.ResponseWriter, r *http.Request) {
+func (api *API) handleStart(w http.ResponseWriter, _ *http.Request) {
 	api.snooper.flowMutex.Lock()
 	api.snooper.flowEnabled = true
 	api.snooper.flowMutex.Unlock()
@@ -41,10 +41,12 @@ func (api *API) handleStart(w http.ResponseWriter, r *http.Request) {
 		"enabled": true,
 	}
 
-	json.NewEncoder(w).Encode(response)
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		api.snooper.logger.Errorf("failed writing start response: %v", err)
+	}
 }
 
-func (api *API) handleStop(w http.ResponseWriter, r *http.Request) {
+func (api *API) handleStop(w http.ResponseWriter, _ *http.Request) {
 	api.snooper.flowMutex.Lock()
 	api.snooper.flowEnabled = false
 	api.snooper.flowMutex.Unlock()
@@ -60,10 +62,12 @@ func (api *API) handleStop(w http.ResponseWriter, r *http.Request) {
 		"enabled": false,
 	}
 
-	json.NewEncoder(w).Encode(response)
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		api.snooper.logger.Errorf("failed writing stop response: %v", err)
+	}
 }
 
-func (api *API) handleStatus(w http.ResponseWriter, r *http.Request) {
+func (api *API) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	api.snooper.flowMutex.RLock()
 	enabled := api.snooper.flowEnabled
 	api.snooper.flowMutex.RUnlock()
@@ -82,5 +86,7 @@ func (api *API) handleStatus(w http.ResponseWriter, r *http.Request) {
 		}(),
 	}
 
-	json.NewEncoder(w).Encode(response)
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		api.snooper.logger.Errorf("failed writing status response: %v", err)
+	}
 }

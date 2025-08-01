@@ -101,6 +101,7 @@ func (s *Snooper) processProxyCall(w http.ResponseWriter, r *http.Request) error
 		if err := json.NewEncoder(w).Encode(response); err != nil {
 			s.logger.Errorf("failed writing flow disabled response: %v", err)
 		}
+
 		return nil
 	}
 
