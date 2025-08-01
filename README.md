@@ -6,8 +6,7 @@
 
 - **Request Forwarding:** Forwards all RPC requests to the specified target while logging the request and response details.
 - **Flow Control API:** Start/stop proxy forwarding via REST API endpoints.
-- **WebSocket Module System:** Real-time module management for advanced monitoring and filtering.
-- **Metrics Integration:** Prometheus metrics endpoint for monitoring proxy performance.
+- **Internal API:** Exposes an internal API for basic control of the proxy, such as temporarily stopping the forwarding of requests/responses.
 - **CLI Support:** Includes several command-line options for customizing the proxy's behavior.
 
 ## Installation
@@ -53,15 +52,17 @@ Usage:
 ./snooper [options] <target>
 
 Options:
-  -b, --bind-address string   Address to bind to and listen for incoming requests. (default "127.0.0.1")
-  -h, --help                  Run with verbose output
-      --no-api                Do not provide management REST api
-      --no-color              Do not use terminal colors in output
-  -p, --port int              Port to listen for incoming requests. (default 3000)
-      --api-port int          Optional separate port for the snooper API endpoints
-      --api-auth string       Optional authentication for API endpoints (format: user:pass,user2:pass2,...)
-      --metrics-port int      Optional port for Prometheus metrics endpoint
-  -v, --verbose               Run with verbose output
+  -b, --bind-address string   Address to bind to and listen for incoming requests (default "127.0.0.1")
+  -h, --help                  Show help information
+      --api-bind string       Address to bind for API endpoints (default "0.0.0.0")
+      --api-port int          Optional separate port for API endpoints
+      --api-auth string       Authentication for API endpoints (format: user:pass,user2:pass2,...)
+      --metrics-bind string   Address to bind for metrics endpoint (default "127.0.0.1")
+      --metrics-port int      Port for Prometheus metrics endpoint
+      --no-api                Disable management REST API
+      --no-color              Disable terminal colors in output
+  -p, --port int              Port to listen for incoming requests (default 3000)
+  -v, --verbose               Enable verbose output
   -V, --version               Print version information
 ```
 
@@ -121,45 +122,25 @@ curl -X POST http://localhost:3000/_snooper/stop
 curl -X POST http://localhost:3000/_snooper/start
 ```
 
-### WebSocket Module API
+### WebSocket Control API
 
-Advanced real-time monitoring via WebSocket connection at `/_snooper/control`.
-
-**Supported Module Types:**
-- `request_snooper` - Monitor incoming requests
-- `response_snooper` - Monitor outgoing responses  
-- `request_counter` - Count and track requests
-- `response_tracer` - Trace response patterns
-
-**Module Registration:**
-```json
-{
-  "method": "register_module",
-  "data": {
-    "type": "request_snooper",
-    "name": "my-snooper",
-    "config": {
-      "request_filter": {
-        "methods": ["POST"],
-        "content_types": ["application/json"],
-        "json_query": "$.method"
-      }
-    }
-  }
-}
-```
+WebSocket connection available at `/_snooper/control` for advanced module management and real-time monitoring.
 
 ### Metrics API
 
-Prometheus metrics available at `/metrics` when metrics server is enabled:
+When `--metrics-port` is specified, Prometheus metrics are available at `/metrics`:
 
 ```bash
-# Start with metrics on port 9090
+# Start with metrics enabled
 ./snooper --metrics-port 9090 http://localhost:8545
 
 # Access metrics
 curl http://localhost:9090/metrics
 ```
+
+**Available Metrics:**
+- Go runtime metrics (garbage collection, memory usage, etc.)
+- HTTP request/response metrics (when processing requests)
 
 ## Common Usage Scenarios
 
@@ -180,7 +161,7 @@ curl -X POST http://localhost:3000/_snooper/start
 
 ### Authenticated API Access
 ```bash
-# Start with API authentication
+# Start with API authentication on separate port
 ./snooper --api-auth admin:secret123 --api-port 3001 http://localhost:8545
 
 # Access API with authentication
@@ -188,14 +169,22 @@ curl -u admin:secret123 http://localhost:3001/_snooper/status
 curl -u admin:secret123 -X POST http://localhost:3001/_snooper/stop
 ```
 
-### Monitoring and Metrics
+### Multiple Services Setup
 ```bash
-# Start with separate API and metrics servers
+# Start with separate API, metrics, and main proxy ports
 ./snooper -p 3000 --api-port 3001 --metrics-port 9090 http://localhost:8545
 
-# Main proxy: localhost:3000
-# API endpoints: localhost:3001/_snooper/*  
-# Metrics: localhost:9090/metrics
+# Main proxy: http://localhost:3000/
+# API endpoints: http://localhost:3000/_snooper/* AND http://localhost:3001/_snooper/*
+# Metrics: http://localhost:9090/metrics
+```
+
+### Disable API Completely
+```bash
+# Start without any management API
+./snooper --no-api -p 3000 http://localhost:8545
+
+# Only proxy functionality available, no /_snooper/ endpoints
 ```
 
 ### Error Responses

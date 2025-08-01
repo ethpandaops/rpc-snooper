@@ -34,13 +34,13 @@ func (api *API) handleStart(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	
+
 	response := map[string]interface{}{
 		"status":  "success",
 		"message": "Flow started",
 		"enabled": true,
 	}
-	
+
 	json.NewEncoder(w).Encode(response)
 }
 
@@ -53,13 +53,13 @@ func (api *API) handleStop(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	
+
 	response := map[string]interface{}{
 		"status":  "success",
 		"message": "Flow stopped",
 		"enabled": false,
 	}
-	
+
 	json.NewEncoder(w).Encode(response)
 }
 
@@ -70,7 +70,7 @@ func (api *API) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	
+
 	response := map[string]interface{}{
 		"status":  "success",
 		"enabled": enabled,
@@ -81,6 +81,6 @@ func (api *API) handleStatus(w http.ResponseWriter, r *http.Request) {
 			return "Flow is disabled"
 		}(),
 	}
-	
+
 	json.NewEncoder(w).Encode(response)
 }
