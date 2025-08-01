@@ -3,6 +3,7 @@ package snooper
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -83,6 +84,26 @@ func (callContext *ProxyCallContext) GetData(moduleID uint64, key string) interf
 }
 
 func (s *Snooper) processProxyCall(w http.ResponseWriter, r *http.Request) error {
+	// Check if flow is enabled
+	s.flowMutex.RLock()
+	flowEnabled := s.flowEnabled
+	s.flowMutex.RUnlock()
+
+	if !flowEnabled {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		
+		response := map[string]interface{}{
+			"status":  "error",
+			"message": "Proxy flow is currently disabled",
+		}
+		
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			s.logger.Errorf("failed writing flow disabled response: %v", err)
+		}
+		return nil
+	}
+
 	callContext := s.newProxyCallContext(r.Context(), s.CallTimeout)
 	defer callContext.cancelFn()
 
