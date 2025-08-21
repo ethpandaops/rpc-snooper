@@ -39,6 +39,7 @@ type Snooper struct {
 
 	// Flow control
 	flowEnabled bool
+	flowBlocked map[string]bool
 	flowMutex   sync.RWMutex
 }
 
@@ -55,6 +56,7 @@ func NewSnooper(target string, logger logrus.FieldLogger) (*Snooper, error) {
 		logger:        logger,
 		moduleManager: modules.NewManager(logger),
 		flowEnabled:   true, // Start with flow enabled by default
+		flowBlocked:   make(map[string]bool),
 	}
 
 	snooper.orderedProcessor = NewOrderedProcessor(snooper)

@@ -87,15 +87,26 @@ func (s *Snooper) processProxyCall(w http.ResponseWriter, r *http.Request) error
 	// Check if flow is enabled
 	s.flowMutex.RLock()
 	flowEnabled := s.flowEnabled
+	flowBlocked := false
+	for path, blocked := range s.flowBlocked {
+		if strings.HasPrefix(r.URL.Path, path) {
+			flowBlocked = flowBlocked || blocked
+		}
+	}
 	s.flowMutex.RUnlock()
 
-	if !flowEnabled {
+	if !flowEnabled || flowBlocked {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
 
+		reason := "Proxy flow is currently disabled"
+		if flowBlocked {
+			reason = "Proxy flow is currently blocked"
+		}
+
 		response := map[string]interface{}{
 			"status":  "error",
-			"message": "Proxy flow is currently disabled",
+			"message": reason,
 		}
 
 		if err := json.NewEncoder(w).Encode(response); err != nil {

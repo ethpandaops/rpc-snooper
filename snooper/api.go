@@ -22,6 +22,8 @@ func (api *API) initRouter(router *mux.Router) {
 	router.HandleFunc("/start", api.handleStart).Methods("POST")
 	router.HandleFunc("/stop", api.handleStop).Methods("POST")
 	router.HandleFunc("/status", api.handleStatus).Methods("GET")
+	router.HandleFunc("/block", api.handleBlock).Methods("GET")
+	router.HandleFunc("/unblock", api.handleUnblock).Methods("GET")
 	router.PathPrefix("/").Handler(http.DefaultServeMux)
 }
 
@@ -64,6 +66,56 @@ func (api *API) handleStop(w http.ResponseWriter, _ *http.Request) {
 
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		api.snooper.logger.Errorf("failed writing stop response: %v", err)
+	}
+}
+
+func (api *API) handleBlock(w http.ResponseWriter, r *http.Request) {
+	route := r.URL.Query().Get("route")
+	if route == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	api.snooper.flowMutex.Lock()
+	api.snooper.flowBlocked[route] = true
+	api.snooper.flowMutex.Unlock()
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+
+	response := map[string]interface{}{
+		"status":  "success",
+		"message": "Flow blocked",
+	}
+
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		api.snooper.logger.Errorf("failed writing block response: %v", err)
+	}
+}
+
+func (api *API) handleUnblock(w http.ResponseWriter, r *http.Request) {
+	route := r.URL.Query().Get("route")
+	if route == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	api.snooper.flowMutex.Lock()
+	delete(api.snooper.flowBlocked, route)
+	api.snooper.flowMutex.Unlock()
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+
+	response := map[string]interface{}{
+		"status":  "success",
+		"message": "Flow unblocked",
+	}
+
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		api.snooper.logger.Errorf("failed writing unblock response: %v", err)
 	}
 }
 
