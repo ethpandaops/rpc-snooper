@@ -1,8 +1,6 @@
 package builtin
 
 import (
-	"sync"
-
 	"github.com/ethpandaops/rpc-snooper/types"
 	"github.com/ethpandaops/rpc-snooper/xatu"
 )
@@ -11,18 +9,13 @@ import (
 type XatuModule struct {
 	id     uint64
 	router *xatu.Router
-
-	// Track which handler matched for each call
-	handlerMap map[uint64]xatu.EventHandler
-	mu         sync.Mutex
 }
 
 // NewXatuModule creates a new XatuModule.
 func NewXatuModule(id uint64, router *xatu.Router) *XatuModule {
 	return &XatuModule{
-		id:         id,
-		router:     router,
-		handlerMap: make(map[uint64]xatu.EventHandler, 100),
+		id:     id,
+		router: router,
 	}
 }
 
@@ -54,9 +47,7 @@ func (m *XatuModule) OnRequest(ctx *types.RequestContext) (*types.RequestContext
 	// Route to matching handler
 	handler, matched := m.router.RouteRequest(event)
 	if matched && handler != nil {
-		m.mu.Lock()
-		m.handlerMap[event.CallID] = handler
-		m.mu.Unlock()
+		ctx.CallCtx.SetData(m.id, "xatu_handler", handler)
 	}
 
 	return ctx, nil
@@ -64,15 +55,7 @@ func (m *XatuModule) OnRequest(ctx *types.RequestContext) (*types.RequestContext
 
 // OnResponse processes the response through the matched handler.
 func (m *XatuModule) OnResponse(ctx *types.ResponseContext) (*types.ResponseContext, error) {
-	m.mu.Lock()
-
-	handler, ok := m.handlerMap[ctx.CallCtx.ID()]
-	if ok {
-		delete(m.handlerMap, ctx.CallCtx.ID())
-	}
-
-	m.mu.Unlock()
-
+	handler, ok := ctx.CallCtx.GetData(m.id, "xatu_handler").(xatu.EventHandler)
 	if !ok || handler == nil {
 		return ctx, nil
 	}
