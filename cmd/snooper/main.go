@@ -3,9 +3,11 @@ package main
 import (
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/ethpandaops/rpc-snooper/snooper"
 	"github.com/ethpandaops/rpc-snooper/utils"
+	"github.com/ethpandaops/rpc-snooper/xatu"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/pflag"
 )
@@ -24,6 +26,14 @@ type CliArgs struct {
 	apiAuth     string
 	metricsPort int
 	metricsBind string
+
+	// Xatu integration
+	xatuEnabled bool
+	xatuName    string
+	xatuOutputs []string
+	xatuLabels  []string
+	xatuTLS     bool
+	xatuHeaders []string
 }
 
 func getEnvBool(key string, defaultValue bool) bool { //nolint:unparam // ignore
@@ -54,6 +64,67 @@ func getEnvInt(key string, defaultValue int) int {
 	return defaultValue
 }
 
+func getEnvStringSlice(key string) []string {
+	if value := os.Getenv(key); value != "" {
+		return strings.Split(value, ",")
+	}
+
+	return nil
+}
+
+func buildXatuConfig(args *CliArgs, logger logrus.FieldLogger) *xatu.Config {
+	if !args.xatuEnabled {
+		return &xatu.Config{Enabled: false}
+	}
+
+	config := &xatu.Config{
+		Enabled: true,
+		Name:    args.xatuName,
+		TLS:     args.xatuTLS,
+		Labels:  make(map[string]string),
+		Headers: make(map[string]string),
+		Outputs: make([]xatu.OutputConfig, 0, len(args.xatuOutputs)),
+	}
+
+	// Parse outputs
+	for _, out := range args.xatuOutputs {
+		outConfig, err := xatu.ParseOutputFlag(out)
+		if err != nil {
+			logger.WithError(err).Warnf("invalid xatu output: %s", out)
+
+			continue
+		}
+
+		config.Outputs = append(config.Outputs, outConfig)
+	}
+
+	// Parse labels
+	for _, label := range args.xatuLabels {
+		key, value, err := xatu.ParseLabelFlag(label)
+		if err != nil {
+			logger.WithError(err).Warnf("invalid xatu label: %s", label)
+
+			continue
+		}
+
+		config.Labels[key] = value
+	}
+
+	// Parse headers
+	for _, header := range args.xatuHeaders {
+		name, value, err := xatu.ParseHeaderFlag(header)
+		if err != nil {
+			logger.WithError(err).Warnf("invalid xatu header: %s", header)
+
+			continue
+		}
+
+		config.Headers[name] = value
+	}
+
+	return config
+}
+
 func main() {
 	// Load defaults from environment variables
 	cliArgs := CliArgs{
@@ -69,6 +140,14 @@ func main() {
 		apiAuth:     getEnvString("SNOOPER_API_AUTH", ""),
 		metricsPort: getEnvInt("SNOOPER_METRICS_PORT", 0),
 		metricsBind: getEnvString("SNOOPER_METRICS_BIND", "127.0.0.1"),
+
+		// Xatu defaults from environment
+		xatuEnabled: getEnvBool("SNOOPER_XATU_ENABLED", false),
+		xatuName:    getEnvString("SNOOPER_XATU_NAME", ""),
+		xatuOutputs: getEnvStringSlice("SNOOPER_XATU_OUTPUTS"),
+		xatuLabels:  getEnvStringSlice("SNOOPER_XATU_LABELS"),
+		xatuTLS:     getEnvBool("SNOOPER_XATU_TLS", false),
+		xatuHeaders: getEnvStringSlice("SNOOPER_XATU_HEADERS"),
 	}
 
 	flags := pflag.NewFlagSet("snooper", pflag.ExitOnError)
@@ -84,6 +163,14 @@ func main() {
 	flags.StringVar(&cliArgs.apiAuth, "api-auth", cliArgs.apiAuth, "Optional authentication for API endpoints (format: user:pass,user2:pass2,...) (env: SNOOPER_API_AUTH)")
 	flags.IntVar(&cliArgs.metricsPort, "metrics-port", cliArgs.metricsPort, "Optional port for Prometheus metrics endpoint (env: SNOOPER_METRICS_PORT)")
 	flags.StringVar(&cliArgs.metricsBind, "metrics-bind", cliArgs.metricsBind, "Optional address to bind to for the Prometheus metrics endpoint (env: SNOOPER_METRICS_BIND)")
+
+	// Xatu flags
+	flags.BoolVar(&cliArgs.xatuEnabled, "xatu-enabled", cliArgs.xatuEnabled, "Enable Xatu event publishing (env: SNOOPER_XATU_ENABLED)")
+	flags.StringVar(&cliArgs.xatuName, "xatu-name", cliArgs.xatuName, "Instance name for Xatu events (env: SNOOPER_XATU_NAME)")
+	flags.StringSliceVar(&cliArgs.xatuOutputs, "xatu-output", cliArgs.xatuOutputs, "Xatu output sink (format: type:address, can be repeated) (env: SNOOPER_XATU_OUTPUTS)")
+	flags.StringSliceVar(&cliArgs.xatuLabels, "xatu-label", cliArgs.xatuLabels, "Xatu label (format: key=value, can be repeated) (env: SNOOPER_XATU_LABELS)")
+	flags.BoolVar(&cliArgs.xatuTLS, "xatu-tls", cliArgs.xatuTLS, "Enable TLS for xatu:// outputs (env: SNOOPER_XATU_TLS)")
+	flags.StringSliceVar(&cliArgs.xatuHeaders, "xatu-header", cliArgs.xatuHeaders, "Xatu output header (format: name=value, can be repeated) (env: SNOOPER_XATU_HEADERS)")
 
 	//nolint:errcheck // ignore
 	flags.Parse(os.Args)
@@ -130,7 +217,10 @@ func main() {
 
 	logger.Infof("target url: %v", cliArgs.target)
 
-	rpcSnooper, err := snooper.NewSnooper(cliArgs.target, logger)
+	// Build Xatu config from CLI args
+	xatuConfig := buildXatuConfig(&cliArgs, logger)
+
+	rpcSnooper, err := snooper.NewSnooper(cliArgs.target, logger, xatuConfig)
 	if err != nil {
 		logger.Errorf("Failed initializing server: %v", err)
 	}
