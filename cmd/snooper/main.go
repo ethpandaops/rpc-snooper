@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -91,17 +92,17 @@ func getEnvDuration(key string, defaultValue time.Duration) time.Duration { //no
 	return defaultValue
 }
 
-func buildXatuConfig(args *CliArgs, logger logrus.FieldLogger) *xatu.Config {
+func buildXatuConfig(args *CliArgs) (*xatu.Config, error) {
 	if !args.xatuEnabled {
-		return &xatu.Config{Enabled: false}
+		return &xatu.Config{Enabled: false}, nil
 	}
 
 	config := &xatu.Config{
 		Enabled:            true,
 		Name:               args.xatuName,
 		TLS:                args.xatuTLS,
-		Labels:             make(map[string]string),
-		Headers:            make(map[string]string),
+		Labels:             make(map[string]string, len(args.xatuLabels)),
+		Headers:            make(map[string]string, len(args.xatuHeaders)),
 		Outputs:            make([]xatu.OutputConfig, 0, len(args.xatuOutputs)),
 		MaxQueueSize:       args.xatuMaxQueueSize,
 		MaxExportBatchSize: args.xatuMaxExportBatchSize,
@@ -119,9 +120,7 @@ func buildXatuConfig(args *CliArgs, logger logrus.FieldLogger) *xatu.Config {
 	for _, out := range args.xatuOutputs {
 		outConfig, err := xatu.ParseOutputFlag(out)
 		if err != nil {
-			logger.WithError(err).Warnf("invalid xatu output: %s", out)
-
-			continue
+			return nil, fmt.Errorf("invalid xatu output %q: %w", out, err)
 		}
 
 		config.Outputs = append(config.Outputs, outConfig)
@@ -131,9 +130,7 @@ func buildXatuConfig(args *CliArgs, logger logrus.FieldLogger) *xatu.Config {
 	for _, label := range args.xatuLabels {
 		key, value, err := xatu.ParseLabelFlag(label)
 		if err != nil {
-			logger.WithError(err).Warnf("invalid xatu label: %s", label)
-
-			continue
+			return nil, fmt.Errorf("invalid xatu label %q: %w", label, err)
 		}
 
 		config.Labels[key] = value
@@ -143,15 +140,13 @@ func buildXatuConfig(args *CliArgs, logger logrus.FieldLogger) *xatu.Config {
 	for _, header := range args.xatuHeaders {
 		name, value, err := xatu.ParseHeaderFlag(header)
 		if err != nil {
-			logger.WithError(err).Warnf("invalid xatu header: %s", header)
-
-			continue
+			return nil, fmt.Errorf("invalid xatu header %q: %w", header, err)
 		}
 
 		config.Headers[name] = value
 	}
 
-	return config
+	return config, nil
 }
 
 func main() {
@@ -263,7 +258,12 @@ func main() {
 	logger.Infof("target url: %v", cliArgs.target)
 
 	// Build Xatu config from CLI args
-	xatuConfig := buildXatuConfig(&cliArgs, logger)
+	xatuConfig, err := buildXatuConfig(&cliArgs)
+	if err != nil {
+		logger.WithError(err).Error("Failed to build Xatu config")
+
+		return
+	}
 
 	rpcSnooper, err := snooper.NewSnooper(cliArgs.target, logger, xatuConfig)
 	if err != nil {
