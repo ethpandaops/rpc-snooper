@@ -1,6 +1,7 @@
 package snooper
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
@@ -13,7 +14,9 @@ import (
 
 	"github.com/ethpandaops/rpc-snooper/metrics"
 	"github.com/ethpandaops/rpc-snooper/modules"
+	"github.com/ethpandaops/rpc-snooper/modules/builtin"
 	"github.com/ethpandaops/rpc-snooper/types"
+	"github.com/ethpandaops/rpc-snooper/xatu"
 	"github.com/gorilla/mux"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/sirupsen/logrus"
@@ -41,12 +44,23 @@ type Snooper struct {
 	flowEnabled bool
 	flowBlocked map[string]bool
 	flowMutex   sync.RWMutex
+
+	// Xatu integration
+	xatuService     xatu.Service
+	metadataFetcher *ExecutionMetadataFetcher
+	jwtSecret       string
 }
 
-func NewSnooper(target string, logger logrus.FieldLogger) (*Snooper, error) {
+func NewSnooper(target string, logger logrus.FieldLogger, xatuConfig *xatu.Config, jwtSecret string) (*Snooper, error) {
 	targetURL, err := url.Parse(target)
 	if err != nil {
 		return nil, err
+	}
+
+	// Create Xatu service
+	xatuService, err := xatu.NewService(xatuConfig, logger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create xatu service: %w", err)
 	}
 
 	snooper := &Snooper{
@@ -57,6 +71,28 @@ func NewSnooper(target string, logger logrus.FieldLogger) (*Snooper, error) {
 		moduleManager: modules.NewManager(logger),
 		flowEnabled:   true, // Start with flow enabled by default
 		flowBlocked:   make(map[string]bool),
+		xatuService:   xatuService,
+		jwtSecret:     jwtSecret,
+	}
+
+	// Set up metadata fetcher if xatu is enabled
+	if xatuService.IsEnabled() {
+		snooper.metadataFetcher = NewExecutionMetadataFetcher(targetURL, jwtSecret, logger)
+
+		// Wire up the fetcher as metadata provider for xatu events
+		xatuService.SetMetadataProvider(snooper.metadataFetcher)
+
+		// Register callback for passive metadata updates from observed engine_getClientVersion responses
+		xatuService.RegisterMetadataUpdateCallback(snooper.metadataFetcher.Update)
+
+		// Register Xatu module
+		xatuModule := builtin.NewXatuModule(snooper.moduleManager.GenerateModuleID(), xatuService.Router())
+
+		if err := snooper.moduleManager.RegisterModule(xatuModule, nil); err != nil {
+			return nil, fmt.Errorf("failed to register xatu module: %w", err)
+		}
+
+		logger.Info("xatu module registered")
 	}
 
 	snooper.orderedProcessor = NewOrderedProcessor(snooper)
@@ -68,9 +104,47 @@ func (s *Snooper) Shutdown() {
 	if s.orderedProcessor != nil {
 		s.orderedProcessor.Stop()
 	}
+
+	if s.metadataFetcher != nil {
+		s.metadataFetcher.Stop()
+	}
+
+	if s.xatuService != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		if err := s.xatuService.Stop(ctx); err != nil {
+			s.logger.WithError(err).Error("failed to stop xatu service")
+		}
+	}
 }
 
 func (s *Snooper) StartServer(host string, port int, noAPI bool) error {
+	// Start Xatu service if enabled
+	// Note: We use context.Background() because the xatu service workers
+	// need a long-lived context that won't be cancelled until shutdown.
+	if s.xatuService != nil && s.xatuService.IsEnabled() {
+		if err := s.xatuService.Start(context.Background()); err != nil {
+			return fmt.Errorf("failed to start xatu service: %w", err)
+		}
+
+		s.logger.Info("xatu service started")
+
+		// Start metadata fetching in background (non-blocking)
+		// This allows the snooper to start accepting connections immediately
+		if s.metadataFetcher != nil {
+			go func() {
+				s.logger.Info("starting background execution metadata fetch...")
+
+				if err := s.metadataFetcher.Start(context.Background()); err != nil {
+					s.logger.WithError(err).Warn("failed to fetch execution metadata (EL may not support engine_getClientVersionV1)")
+				} else {
+					s.logger.Info("execution metadata fetch completed successfully")
+				}
+			}()
+		}
+	}
+
 	router := mux.NewRouter()
 
 	if !noAPI {

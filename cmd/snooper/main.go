@@ -1,11 +1,15 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/ethpandaops/rpc-snooper/snooper"
 	"github.com/ethpandaops/rpc-snooper/utils"
+	"github.com/ethpandaops/rpc-snooper/xatu"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/pflag"
 )
@@ -24,6 +28,25 @@ type CliArgs struct {
 	apiAuth     string
 	metricsPort int
 	metricsBind string
+
+	// Xatu integration
+	xatuEnabled            bool
+	xatuName               string
+	xatuOutputs            []string
+	xatuLabels             []string
+	xatuTLS                bool
+	xatuHeaders            []string
+	xatuMaxQueueSize       int
+	xatuMaxExportBatchSize int
+	xatuWorkers            int
+	xatuBatchTimeout       time.Duration
+	xatuExportTimeout      time.Duration
+	xatuKeepAliveEnabled   bool
+	xatuKeepAliveTime      time.Duration
+	xatuKeepAliveTimeout   time.Duration
+
+	// Engine API authentication
+	jwtSecret string
 }
 
 func getEnvBool(key string, defaultValue bool) bool { //nolint:unparam // ignore
@@ -54,6 +77,81 @@ func getEnvInt(key string, defaultValue int) int {
 	return defaultValue
 }
 
+func getEnvStringSlice(key string) []string {
+	if value := os.Getenv(key); value != "" {
+		return strings.Split(value, ",")
+	}
+
+	return nil
+}
+
+func getEnvDuration(key string, defaultValue time.Duration) time.Duration { //nolint:unparam // ignore
+	if value := os.Getenv(key); value != "" {
+		if parsed, err := time.ParseDuration(value); err == nil {
+			return parsed
+		}
+	}
+
+	return defaultValue
+}
+
+func buildXatuConfig(args *CliArgs) (*xatu.Config, error) {
+	if !args.xatuEnabled {
+		return &xatu.Config{Enabled: false}, nil
+	}
+
+	config := &xatu.Config{
+		Enabled:            true,
+		Name:               args.xatuName,
+		TLS:                args.xatuTLS,
+		Labels:             make(map[string]string, len(args.xatuLabels)),
+		Headers:            make(map[string]string, len(args.xatuHeaders)),
+		Outputs:            make([]xatu.OutputConfig, 0, len(args.xatuOutputs)),
+		MaxQueueSize:       args.xatuMaxQueueSize,
+		MaxExportBatchSize: args.xatuMaxExportBatchSize,
+		Workers:            args.xatuWorkers,
+		BatchTimeout:       args.xatuBatchTimeout,
+		ExportTimeout:      args.xatuExportTimeout,
+		KeepAlive: xatu.KeepAliveConfig{
+			Enabled: args.xatuKeepAliveEnabled,
+			Time:    args.xatuKeepAliveTime,
+			Timeout: args.xatuKeepAliveTimeout,
+		},
+	}
+
+	// Parse outputs
+	for _, out := range args.xatuOutputs {
+		outConfig, err := xatu.ParseOutputFlag(out)
+		if err != nil {
+			return nil, fmt.Errorf("invalid xatu output %q: %w", out, err)
+		}
+
+		config.Outputs = append(config.Outputs, outConfig)
+	}
+
+	// Parse labels
+	for _, label := range args.xatuLabels {
+		key, value, err := xatu.ParseLabelFlag(label)
+		if err != nil {
+			return nil, fmt.Errorf("invalid xatu label %q: %w", label, err)
+		}
+
+		config.Labels[key] = value
+	}
+
+	// Parse headers
+	for _, header := range args.xatuHeaders {
+		name, value, err := xatu.ParseHeaderFlag(header)
+		if err != nil {
+			return nil, fmt.Errorf("invalid xatu header %q: %w", header, err)
+		}
+
+		config.Headers[name] = value
+	}
+
+	return config, nil
+}
+
 func main() {
 	// Load defaults from environment variables
 	cliArgs := CliArgs{
@@ -69,6 +167,23 @@ func main() {
 		apiAuth:     getEnvString("SNOOPER_API_AUTH", ""),
 		metricsPort: getEnvInt("SNOOPER_METRICS_PORT", 0),
 		metricsBind: getEnvString("SNOOPER_METRICS_BIND", "127.0.0.1"),
+
+		// Xatu defaults from environment
+		xatuEnabled:            getEnvBool("SNOOPER_XATU_ENABLED", false),
+		xatuName:               getEnvString("SNOOPER_XATU_NAME", ""),
+		xatuOutputs:            getEnvStringSlice("SNOOPER_XATU_OUTPUTS"),
+		xatuLabels:             getEnvStringSlice("SNOOPER_XATU_LABELS"),
+		xatuTLS:                getEnvBool("SNOOPER_XATU_TLS", false),
+		xatuHeaders:            getEnvStringSlice("SNOOPER_XATU_HEADERS"),
+		xatuMaxQueueSize:       getEnvInt("SNOOPER_XATU_MAX_QUEUE_SIZE", 0),
+		xatuMaxExportBatchSize: getEnvInt("SNOOPER_XATU_MAX_EXPORT_BATCH_SIZE", 0),
+		xatuWorkers:            getEnvInt("SNOOPER_XATU_WORKERS", 0),
+		xatuBatchTimeout:       getEnvDuration("SNOOPER_XATU_BATCH_TIMEOUT", 0),
+		xatuExportTimeout:      getEnvDuration("SNOOPER_XATU_EXPORT_TIMEOUT", 0),
+		xatuKeepAliveEnabled:   getEnvBool("SNOOPER_XATU_KEEPALIVE_ENABLED", false),
+		xatuKeepAliveTime:      getEnvDuration("SNOOPER_XATU_KEEPALIVE_TIME", 0),
+		xatuKeepAliveTimeout:   getEnvDuration("SNOOPER_XATU_KEEPALIVE_TIMEOUT", 0),
+		jwtSecret:              getEnvString("SNOOPER_JWT_SECRET", ""),
 	}
 
 	flags := pflag.NewFlagSet("snooper", pflag.ExitOnError)
@@ -84,6 +199,23 @@ func main() {
 	flags.StringVar(&cliArgs.apiAuth, "api-auth", cliArgs.apiAuth, "Optional authentication for API endpoints (format: user:pass,user2:pass2,...) (env: SNOOPER_API_AUTH)")
 	flags.IntVar(&cliArgs.metricsPort, "metrics-port", cliArgs.metricsPort, "Optional port for Prometheus metrics endpoint (env: SNOOPER_METRICS_PORT)")
 	flags.StringVar(&cliArgs.metricsBind, "metrics-bind", cliArgs.metricsBind, "Optional address to bind to for the Prometheus metrics endpoint (env: SNOOPER_METRICS_BIND)")
+
+	// Xatu flags
+	flags.BoolVar(&cliArgs.xatuEnabled, "xatu-enabled", cliArgs.xatuEnabled, "Enable Xatu event publishing (env: SNOOPER_XATU_ENABLED)")
+	flags.StringVar(&cliArgs.xatuName, "xatu-name", cliArgs.xatuName, "Instance name for Xatu events (env: SNOOPER_XATU_NAME)")
+	flags.StringSliceVar(&cliArgs.xatuOutputs, "xatu-output", cliArgs.xatuOutputs, "Xatu output sink (format: type:address, can be repeated) (env: SNOOPER_XATU_OUTPUTS)")
+	flags.StringSliceVar(&cliArgs.xatuLabels, "xatu-label", cliArgs.xatuLabels, "Xatu label (format: key=value, can be repeated) (env: SNOOPER_XATU_LABELS)")
+	flags.BoolVar(&cliArgs.xatuTLS, "xatu-tls", cliArgs.xatuTLS, "Enable TLS for xatu:// outputs (env: SNOOPER_XATU_TLS)")
+	flags.StringSliceVar(&cliArgs.xatuHeaders, "xatu-header", cliArgs.xatuHeaders, "Xatu output header (format: name=value, can be repeated) (env: SNOOPER_XATU_HEADERS)")
+	flags.IntVar(&cliArgs.xatuMaxQueueSize, "xatu-max-queue-size", cliArgs.xatuMaxQueueSize, "Max events to buffer before dropping (env: SNOOPER_XATU_MAX_QUEUE_SIZE)")
+	flags.IntVar(&cliArgs.xatuMaxExportBatchSize, "xatu-max-export-batch-size", cliArgs.xatuMaxExportBatchSize, "Max events per batch export (env: SNOOPER_XATU_MAX_EXPORT_BATCH_SIZE)")
+	flags.IntVar(&cliArgs.xatuWorkers, "xatu-workers", cliArgs.xatuWorkers, "Number of concurrent export workers (env: SNOOPER_XATU_WORKERS)")
+	flags.DurationVar(&cliArgs.xatuBatchTimeout, "xatu-batch-timeout", cliArgs.xatuBatchTimeout, "Time to wait before exporting partial batch (env: SNOOPER_XATU_BATCH_TIMEOUT)")
+	flags.DurationVar(&cliArgs.xatuExportTimeout, "xatu-export-timeout", cliArgs.xatuExportTimeout, "Timeout for each export operation (env: SNOOPER_XATU_EXPORT_TIMEOUT)")
+	flags.BoolVar(&cliArgs.xatuKeepAliveEnabled, "xatu-keepalive-enabled", cliArgs.xatuKeepAliveEnabled, "Enable gRPC keepalive (env: SNOOPER_XATU_KEEPALIVE_ENABLED)")
+	flags.DurationVar(&cliArgs.xatuKeepAliveTime, "xatu-keepalive-time", cliArgs.xatuKeepAliveTime, "Duration after which keepalive ping is sent (env: SNOOPER_XATU_KEEPALIVE_TIME)")
+	flags.DurationVar(&cliArgs.xatuKeepAliveTimeout, "xatu-keepalive-timeout", cliArgs.xatuKeepAliveTimeout, "Duration to wait for keepalive response (env: SNOOPER_XATU_KEEPALIVE_TIMEOUT)")
+	flags.StringVar(&cliArgs.jwtSecret, "jwt-secret", cliArgs.jwtSecret, "JWT secret for Engine API authentication - file path or hex-encoded value (env: SNOOPER_JWT_SECRET)")
 
 	//nolint:errcheck // ignore
 	flags.Parse(os.Args)
@@ -130,7 +262,15 @@ func main() {
 
 	logger.Infof("target url: %v", cliArgs.target)
 
-	rpcSnooper, err := snooper.NewSnooper(cliArgs.target, logger)
+	// Build Xatu config from CLI args
+	xatuConfig, err := buildXatuConfig(&cliArgs)
+	if err != nil {
+		logger.WithError(err).Error("Failed to build Xatu config")
+
+		return
+	}
+
+	rpcSnooper, err := snooper.NewSnooper(cliArgs.target, logger, xatuConfig, cliArgs.jwtSecret)
 	if err != nil {
 		logger.Errorf("Failed initializing server: %v", err)
 	}
