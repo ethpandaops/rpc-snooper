@@ -123,7 +123,8 @@ func (h *EngineGetBlobsHandler) buildDecoratedEvent(
 	//nolint:gosec // Safe: slice length cannot exceed uint32 in practice
 	requestedCount := uint32(len(pending.VersionedHashes))
 
-	data := &xatuProto.ConsensusEngineAPIGetBlobs{
+	data := &xatuProto.ExecutionEngineGetBlobs{
+		Source:          xatuProto.EngineSource_ENGINE_SOURCE_SNOOPER,
 		RequestedAt:     timestamppb.New(pending.RequestTimestamp),
 		DurationMs:      wrapperspb.UInt64(uint64(durationMs)), //nolint:gosec // duration is non-negative after check
 		RequestedCount:  wrapperspb.UInt32(requestedCount),
@@ -136,15 +137,15 @@ func (h *EngineGetBlobsHandler) buildDecoratedEvent(
 
 	return &xatuProto.DecoratedEvent{
 		Event: &xatuProto.Event{
-			Name:     xatuProto.Event_CONSENSUS_ENGINE_API_GET_BLOBS,
+			Name:     xatuProto.Event_EXECUTION_ENGINE_GET_BLOBS,
 			DateTime: timestamppb.New(resp.Timestamp),
 			Id:       uuid.New().String(),
 		},
 		Meta: &xatuProto.Meta{
 			Client: h.publisher.ClientMeta(),
 		},
-		Data: &xatuProto.DecoratedEvent_ConsensusEngineApiGetBlobs{
-			ConsensusEngineApiGetBlobs: data,
+		Data: &xatuProto.DecoratedEvent_ExecutionEngineGetBlobs{
+			ExecutionEngineGetBlobs: data,
 		},
 	}
 }

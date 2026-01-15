@@ -117,6 +117,7 @@ func (p *publisher) ClientMeta() *xatu.ClientMeta {
 		Version:        utils.GetBuildVersion(),
 		Implementation: "rpc-snooper",
 		Labels:         p.config.Labels,
+		ModuleName:     xatu.ModuleName_EL_MIMICRY,
 	}
 }
 

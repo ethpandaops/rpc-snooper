@@ -63,6 +63,9 @@ func (s *service) registerHandlers() {
 	// Register engine_getBlobs handler
 	s.router.Register(NewEngineGetBlobsHandler(s.publisher, s.log))
 
+	// Register engine_newPayload handler
+	s.router.Register(NewEngineNewPayloadHandler(s.publisher, s.log))
+
 	s.log.WithField("handler_count", s.router.HandlerCount()).Info("registered xatu event handlers")
 }
 

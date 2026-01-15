@@ -2,6 +2,8 @@ module github.com/ethpandaops/rpc-snooper
 
 go 1.25.1
 
+replace github.com/ethpandaops/xatu => ../xatu
+
 require (
 	github.com/andybalholm/brotli v1.2.0
 	github.com/creasty/defaults v1.8.0
