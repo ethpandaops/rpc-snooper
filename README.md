@@ -207,6 +207,61 @@ When flow is disabled, all proxy requests return:
 ```
 **HTTP Status:** `401 Unauthorized`
 
+## Xatu Integration
+
+`rpc-snooper` can publish Engine API events to [Xatu](https://github.com/ethpandaops/xatu) for observability and analysis. Currently supported RPC methods:
+
+- `engine_newPayload*` (V1, V2, V3, V4)
+- `engine_getBlobs*` (V1)
+
+### CLI Options
+
+```
+--xatu-enabled              Enable Xatu event publishing (env: SNOOPER_XATU_ENABLED)
+--xatu-name                 Instance name for Xatu events (env: SNOOPER_XATU_NAME)
+--xatu-output               Output sink, can be repeated (format: type:address) (env: SNOOPER_XATU_OUTPUTS)
+--xatu-label                Custom label, can be repeated (format: key=value) (env: SNOOPER_XATU_LABELS)
+--xatu-tls                  Enable TLS for xatu:// outputs (env: SNOOPER_XATU_TLS)
+--xatu-header               Custom header, can be repeated (format: name=value) (env: SNOOPER_XATU_HEADERS)
+```
+
+Output types: `stdout`, `http`, `xatu` (gRPC), `kafka`
+
+### Examples
+
+**Output to stdout (for debugging):**
+```bash
+./snooper --xatu-enabled --xatu-name my-snooper --xatu-output stdout http://localhost:8551
+```
+
+**Output to Xatu server (gRPC):**
+```bash
+./snooper --xatu-enabled --xatu-name my-snooper \
+  --xatu-output xatu:xatu.example.com:8080 \
+  --xatu-tls \
+  http://localhost:8551
+```
+
+**With custom labels:**
+```bash
+./snooper --xatu-enabled --xatu-name my-snooper \
+  --xatu-output xatu:xatu.example.com:8080 \
+  --xatu-label network=mainnet \
+  --xatu-label client=geth \
+  http://localhost:8551
+```
+
+**Using environment variables:**
+```bash
+export SNOOPER_XATU_ENABLED=true
+export SNOOPER_XATU_NAME=my-snooper
+export SNOOPER_XATU_OUTPUTS=xatu:xatu.example.com:8080
+export SNOOPER_XATU_LABELS=network=mainnet,client=geth
+export SNOOPER_XATU_TLS=true
+
+./snooper http://localhost:8551
+```
+
 ## Contributing
 
 Contributions to `rpc-snooper` are welcome! Here are some ways you can contribute:
