@@ -13,7 +13,7 @@ type Router struct {
 // NewRouter creates a new Router instance.
 func NewRouter(log logrus.FieldLogger) *Router {
 	return &Router{
-		handlers: make([]EventHandler, 0),
+		handlers: make([]EventHandler, 0, 8),
 		log:      log.WithField("component", "xatu_router"),
 	}
 }

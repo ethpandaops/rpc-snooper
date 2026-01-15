@@ -17,6 +17,14 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+// Sink configuration defaults.
+const (
+	defaultMaxQueueSize       = 51200
+	defaultMaxExportBatchSize = 512
+	defaultBatchTimeout       = 5 * time.Second
+	defaultExportTimeout      = 30 * time.Second
+)
+
 // Publisher manages event sinks and publishes decorated events.
 type Publisher interface {
 	// Start initializes all sinks.
@@ -140,10 +148,10 @@ func (p *publisher) createSink(outConfig OutputConfig, index int) (output.Sink, 
 		conf := &http.Config{
 			Address:            outConfig.Address,
 			Headers:            p.config.Headers,
-			MaxQueueSize:       51200,
-			BatchTimeout:       5 * time.Second,
-			ExportTimeout:      30 * time.Second,
-			MaxExportBatchSize: 512,
+			MaxQueueSize:       defaultMaxQueueSize,
+			BatchTimeout:       defaultBatchTimeout,
+			ExportTimeout:      defaultExportTimeout,
+			MaxExportBatchSize: defaultMaxExportBatchSize,
 		}
 		if err := defaults.Set(conf); err != nil {
 			return nil, fmt.Errorf("failed to set http defaults: %w", err)
@@ -156,10 +164,10 @@ func (p *publisher) createSink(outConfig OutputConfig, index int) (output.Sink, 
 			Address:            outConfig.Address,
 			TLS:                p.config.TLS,
 			Headers:            p.config.Headers,
-			MaxQueueSize:       51200,
-			BatchTimeout:       5 * time.Second,
-			ExportTimeout:      30 * time.Second,
-			MaxExportBatchSize: 512,
+			MaxQueueSize:       defaultMaxQueueSize,
+			BatchTimeout:       defaultBatchTimeout,
+			ExportTimeout:      defaultExportTimeout,
+			MaxExportBatchSize: defaultMaxExportBatchSize,
 		}
 		if err := defaults.Set(conf); err != nil {
 			return nil, fmt.Errorf("failed to set xatu defaults: %w", err)

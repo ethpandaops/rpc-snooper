@@ -119,42 +119,29 @@ func ParseOutputFlag(s string) (OutputConfig, error) {
 
 // ParseLabelFlag parses a label flag value in "key=value" format.
 func ParseLabelFlag(s string) (key, value string, err error) {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return "", "", errors.New("empty label flag")
-	}
-
-	var found bool
-
-	key, value, found = strings.Cut(s, "=")
-	if !found {
-		return "", "", fmt.Errorf("invalid label format %q (expected key=value)", s)
-	}
-
-	if key == "" {
-		return "", "", errors.New("label key cannot be empty")
-	}
-
-	return key, value, nil
+	return parseKeyValueFlag(s, "label")
 }
 
 // ParseHeaderFlag parses a header flag value in "name=value" format.
 func ParseHeaderFlag(s string) (name, value string, err error) {
+	return parseKeyValueFlag(s, "header")
+}
+
+// parseKeyValueFlag parses a "key=value" formatted string.
+func parseKeyValueFlag(s, flagType string) (key, value string, err error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
-		return "", "", errors.New("empty header flag")
+		return "", "", fmt.Errorf("empty %s flag", flagType)
 	}
 
-	var found bool
-
-	name, value, found = strings.Cut(s, "=")
+	key, value, found := strings.Cut(s, "=")
 	if !found {
-		return "", "", fmt.Errorf("invalid header format %q (expected name=value)", s)
+		return "", "", fmt.Errorf("invalid %s format %q (expected key=value)", flagType, s)
 	}
 
-	if name == "" {
-		return "", "", errors.New("header name cannot be empty")
+	if key == "" {
+		return "", "", fmt.Errorf("%s key cannot be empty", flagType)
 	}
 
-	return name, value, nil
+	return key, value, nil
 }

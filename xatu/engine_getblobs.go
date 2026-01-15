@@ -35,7 +35,7 @@ func NewEngineGetBlobsHandler(publisher Publisher, log logrus.FieldLogger) *Engi
 	return &EngineGetBlobsHandler{
 		publisher: publisher,
 		log:       log.WithField("handler", "engine_getBlobs"),
-		pending:   make(map[uint64]*PendingGetBlobsCall, 100),
+		pending:   make(map[uint64]*PendingGetBlobsCall, DefaultPendingCapacity),
 	}
 }
 
@@ -93,7 +93,7 @@ func (h *EngineGetBlobsHandler) HandleResponse(event *ResponseEvent) {
 	// Build and publish event
 	decoratedEvent := h.buildDecoratedEvent(pending, event)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), DefaultPublishTimeout)
 	defer cancel()
 
 	if err := h.publisher.Publish(ctx, decoratedEvent); err != nil {
@@ -115,10 +115,7 @@ func (h *EngineGetBlobsHandler) buildDecoratedEvent(
 ) *xatuProto.DecoratedEvent {
 	returnedCount, status, errorMsg := extractGetBlobsResponseData(resp)
 
-	durationMs := resp.Duration.Milliseconds()
-	if durationMs < 0 {
-		durationMs = 0
-	}
+	durationMs := max(resp.Duration.Milliseconds(), 0)
 
 	//nolint:gosec // Safe: slice length cannot exceed uint32 in practice
 	requestedCount := uint32(len(pending.VersionedHashes))
@@ -176,11 +173,8 @@ func extractVersionedHashes(params []any) []string {
 // extractMethodVersion extracts the version suffix from the method name.
 // e.g., "engine_getBlobsV1" -> "V1"
 func extractMethodVersion(method string) string {
-	if strings.HasPrefix(method, "engine_getBlobs") {
-		version := strings.TrimPrefix(method, "engine_getBlobs")
-		if version != "" {
-			return version
-		}
+	if version, found := strings.CutPrefix(method, "engine_getBlobs"); found && version != "" {
+		return version
 	}
 
 	return ""

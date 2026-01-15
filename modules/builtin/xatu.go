@@ -75,7 +75,7 @@ func (m *XatuModule) OnResponse(ctx *types.ResponseContext) (*types.ResponseCont
 }
 
 // Configure is a no-op for XatuModule.
-func (m *XatuModule) Configure(_ map[string]interface{}) error {
+func (m *XatuModule) Configure(_ map[string]any) error {
 	return nil
 }
 
@@ -85,8 +85,8 @@ func (m *XatuModule) Close() error {
 }
 
 // extractMethod extracts the JSON-RPC method from the parsed body.
-func extractMethod(body interface{}) string {
-	bodyMap, ok := body.(map[string]interface{})
+func extractMethod(body any) string {
+	bodyMap, ok := body.(map[string]any)
 	if !ok {
 		return ""
 	}
@@ -100,13 +100,13 @@ func extractMethod(body interface{}) string {
 }
 
 // extractParams extracts the JSON-RPC params from the parsed body.
-func extractParams(body interface{}) []any {
-	bodyMap, ok := body.(map[string]interface{})
+func extractParams(body any) []any {
+	bodyMap, ok := body.(map[string]any)
 	if !ok {
 		return nil
 	}
 
-	params, ok := bodyMap["params"].([]interface{})
+	params, ok := bodyMap["params"].([]any)
 	if !ok {
 		return nil
 	}
@@ -115,8 +115,8 @@ func extractParams(body interface{}) []any {
 }
 
 // extractResult extracts the JSON-RPC result from the parsed body.
-func extractResult(body interface{}) interface{} {
-	bodyMap, ok := body.(map[string]interface{})
+func extractResult(body any) any {
+	bodyMap, ok := body.(map[string]any)
 	if !ok {
 		return nil
 	}
@@ -125,13 +125,13 @@ func extractResult(body interface{}) interface{} {
 }
 
 // extractRPCError extracts the JSON-RPC error from the parsed body.
-func extractRPCError(body interface{}) *xatu.RPCError {
-	bodyMap, ok := body.(map[string]interface{})
+func extractRPCError(body any) *xatu.RPCError {
+	bodyMap, ok := body.(map[string]any)
 	if !ok {
 		return nil
 	}
 
-	errObj, ok := bodyMap["error"].(map[string]interface{})
+	errObj, ok := bodyMap["error"].(map[string]any)
 	if !ok {
 		return nil
 	}

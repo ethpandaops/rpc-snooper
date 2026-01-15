@@ -4,6 +4,15 @@ import (
 	"time"
 )
 
+// Handler constants.
+const (
+	// DefaultPublishTimeout is the context timeout for publishing events.
+	DefaultPublishTimeout = 5 * time.Second
+
+	// DefaultPendingCapacity is the initial capacity for pending call maps.
+	DefaultPendingCapacity = 100
+)
+
 // EventHandler defines the interface for handling specific JSON-RPC method events.
 // Each handler is responsible for processing requests and responses for a specific
 // set of methods and publishing corresponding Xatu events.

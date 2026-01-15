@@ -51,7 +51,7 @@ func NewEngineNewPayloadHandler(publisher Publisher, log logrus.FieldLogger) *En
 	return &EngineNewPayloadHandler{
 		publisher: publisher,
 		log:       log.WithField("handler", "engine_newPayload"),
-		pending:   make(map[uint64]*PendingNewPayloadCall, 100),
+		pending:   make(map[uint64]*PendingNewPayloadCall, DefaultPendingCapacity),
 	}
 }
 
@@ -106,7 +106,7 @@ func (h *EngineNewPayloadHandler) HandleResponse(event *ResponseEvent) {
 	// Build and publish event
 	decoratedEvent := h.buildDecoratedEvent(pending, event)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), DefaultPublishTimeout)
 	defer cancel()
 
 	if err := h.publisher.Publish(ctx, decoratedEvent); err != nil {
@@ -189,10 +189,7 @@ func (h *EngineNewPayloadHandler) buildDecoratedEvent(
 ) *xatuProto.DecoratedEvent {
 	status, latestValidHash, validationError := extractNewPayloadResponseData(resp)
 
-	durationMs := resp.Duration.Milliseconds()
-	if durationMs < 0 {
-		durationMs = 0
-	}
+	durationMs := max(resp.Duration.Milliseconds(), 0)
 
 	data := &xatuProto.ExecutionEngineNewPayload{
 		Source:        xatuProto.EngineSource_ENGINE_SOURCE_SNOOPER,
@@ -233,11 +230,8 @@ func (h *EngineNewPayloadHandler) buildDecoratedEvent(
 // extractNewPayloadMethodVersion extracts the version suffix from the method name.
 // e.g., "engine_newPayloadV3" -> "V3"
 func extractNewPayloadMethodVersion(method string) string {
-	if strings.HasPrefix(method, "engine_newPayload") {
-		version := strings.TrimPrefix(method, "engine_newPayload")
-		if version != "" {
-			return version
-		}
+	if version, found := strings.CutPrefix(method, "engine_newPayload"); found && version != "" {
+		return version
 	}
 
 	return ""
