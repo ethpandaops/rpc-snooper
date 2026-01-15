@@ -44,7 +44,9 @@ type CliArgs struct {
 	xatuKeepAliveEnabled   bool
 	xatuKeepAliveTime      time.Duration
 	xatuKeepAliveTimeout   time.Duration
-	xatuJWTSecret          string
+
+	// Engine API authentication
+	jwtSecret string
 }
 
 func getEnvBool(key string, defaultValue bool) bool { //nolint:unparam // ignore
@@ -105,7 +107,6 @@ func buildXatuConfig(args *CliArgs) (*xatu.Config, error) {
 		Labels:             make(map[string]string, len(args.xatuLabels)),
 		Headers:            make(map[string]string, len(args.xatuHeaders)),
 		Outputs:            make([]xatu.OutputConfig, 0, len(args.xatuOutputs)),
-		JWTSecret:          args.xatuJWTSecret,
 		MaxQueueSize:       args.xatuMaxQueueSize,
 		MaxExportBatchSize: args.xatuMaxExportBatchSize,
 		Workers:            args.xatuWorkers,
@@ -182,7 +183,7 @@ func main() {
 		xatuKeepAliveEnabled:   getEnvBool("SNOOPER_XATU_KEEPALIVE_ENABLED", false),
 		xatuKeepAliveTime:      getEnvDuration("SNOOPER_XATU_KEEPALIVE_TIME", 0),
 		xatuKeepAliveTimeout:   getEnvDuration("SNOOPER_XATU_KEEPALIVE_TIMEOUT", 0),
-		xatuJWTSecret:          getEnvString("SNOOPER_XATU_JWT_SECRET", ""),
+		jwtSecret:              getEnvString("SNOOPER_JWT_SECRET", ""),
 	}
 
 	flags := pflag.NewFlagSet("snooper", pflag.ExitOnError)
@@ -214,7 +215,7 @@ func main() {
 	flags.BoolVar(&cliArgs.xatuKeepAliveEnabled, "xatu-keepalive-enabled", cliArgs.xatuKeepAliveEnabled, "Enable gRPC keepalive (env: SNOOPER_XATU_KEEPALIVE_ENABLED)")
 	flags.DurationVar(&cliArgs.xatuKeepAliveTime, "xatu-keepalive-time", cliArgs.xatuKeepAliveTime, "Duration after which keepalive ping is sent (env: SNOOPER_XATU_KEEPALIVE_TIME)")
 	flags.DurationVar(&cliArgs.xatuKeepAliveTimeout, "xatu-keepalive-timeout", cliArgs.xatuKeepAliveTimeout, "Duration to wait for keepalive response (env: SNOOPER_XATU_KEEPALIVE_TIMEOUT)")
-	flags.StringVar(&cliArgs.xatuJWTSecret, "xatu-jwt-secret", cliArgs.xatuJWTSecret, "Hex-encoded JWT secret for Engine API authentication (env: SNOOPER_XATU_JWT_SECRET)")
+	flags.StringVar(&cliArgs.jwtSecret, "jwt-secret", cliArgs.jwtSecret, "JWT secret for Engine API authentication - file path or hex-encoded value (env: SNOOPER_JWT_SECRET)")
 
 	//nolint:errcheck // ignore
 	flags.Parse(os.Args)
@@ -269,7 +270,7 @@ func main() {
 		return
 	}
 
-	rpcSnooper, err := snooper.NewSnooper(cliArgs.target, logger, xatuConfig)
+	rpcSnooper, err := snooper.NewSnooper(cliArgs.target, logger, xatuConfig, cliArgs.jwtSecret)
 	if err != nil {
 		logger.Errorf("Failed initializing server: %v", err)
 	}

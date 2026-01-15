@@ -1,4 +1,4 @@
-package xatu
+package snooper
 
 import (
 	"bytes"
@@ -9,13 +9,13 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/ethpandaops/rpc-snooper/xatu"
 	"github.com/golang-jwt/jwt/v5"
-
-	xatu "github.com/ethpandaops/xatu/pkg/proto/xatu"
 	"github.com/sirupsen/logrus"
 )
 
@@ -33,39 +33,6 @@ const (
 	maxRetryDelay = 30 * time.Second
 )
 
-// ExecutionMetadata holds cached execution client information.
-type ExecutionMetadata struct {
-	Implementation string
-	Version        string
-	VersionMajor   string
-	VersionMinor   string
-	VersionPatch   string
-}
-
-// ToProto converts the metadata to the xatu proto format.
-func (m *ExecutionMetadata) ToProto() *xatu.ClientMeta_Ethereum_Execution {
-	if m == nil {
-		return nil
-	}
-
-	return &xatu.ClientMeta_Ethereum_Execution{
-		Implementation: m.Implementation,
-		Version:        m.Version,
-		VersionMajor:   m.VersionMajor,
-		VersionMinor:   m.VersionMinor,
-		VersionPatch:   m.VersionPatch,
-	}
-}
-
-// ClientVersionV1 represents the response from engine_getClientVersionV1.
-// See: https://github.com/ethereum/execution-apis/blob/main/src/engine/identification.md
-type ClientVersionV1 struct {
-	Code    string `json:"code"`    // 2-letter client code (e.g., "GE" for Geth)
-	Name    string `json:"name"`    // Human-readable name (e.g., "Geth")
-	Version string `json:"version"` // Version string (e.g., "v1.14.0")
-	Commit  string `json:"commit"`  // 4-byte commit hash
-}
-
 // ExecutionMetadataFetcher manages fetching and caching execution client metadata.
 type ExecutionMetadataFetcher struct {
 	targetURL  *url.URL
@@ -74,7 +41,7 @@ type ExecutionMetadataFetcher struct {
 	httpClient *http.Client
 
 	mu       sync.RWMutex
-	metadata *ExecutionMetadata
+	metadata *xatu.ExecutionMetadata
 
 	// ready signals when initial metadata has been fetched
 	ready     chan struct{}
@@ -87,7 +54,7 @@ type ExecutionMetadataFetcher struct {
 
 // NewExecutionMetadataFetcher creates a new ExecutionMetadataFetcher.
 func NewExecutionMetadataFetcher(targetURL *url.URL, jwtSecret string, log logrus.FieldLogger) *ExecutionMetadataFetcher {
-	secret := parseJWTSecret(jwtSecret)
+	secret := parseJWTSecret(jwtSecret, log)
 
 	return &ExecutionMetadataFetcher{
 		targetURL: targetURL,
@@ -101,13 +68,34 @@ func NewExecutionMetadataFetcher(targetURL *url.URL, jwtSecret string, log logru
 	}
 }
 
-// parseJWTSecret parses a hex-encoded JWT secret, handling optional "0x" prefix.
-func parseJWTSecret(s string) []byte {
+// parseJWTSecret parses a JWT secret from either a file path or hex-encoded string.
+// If the value looks like a file path, it reads the secret from the file.
+// Otherwise, it treats it as a hex-encoded value (with optional "0x" prefix).
+func parseJWTSecret(s string, log logrus.FieldLogger) []byte {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return nil
 	}
 
+	// Check if it looks like a file path
+	if strings.HasPrefix(s, "/") || strings.HasPrefix(s, "./") || strings.HasPrefix(s, "../") {
+		data, err := os.ReadFile(s)
+		if err != nil {
+			log.WithError(err).WithField("path", s).Error("failed to read JWT secret from file")
+
+			return nil
+		}
+
+		// File contents should be hex-encoded
+		return parseHexSecret(strings.TrimSpace(string(data)))
+	}
+
+	return parseHexSecret(s)
+}
+
+// parseHexSecret parses a hex-encoded secret string.
+func parseHexSecret(s string) []byte {
+	s = strings.TrimSpace(s)
 	s = strings.TrimPrefix(s, "0x")
 
 	secret, err := hex.DecodeString(s)
@@ -167,7 +155,7 @@ func (f *ExecutionMetadataFetcher) Ready() <-chan struct{} {
 }
 
 // Get returns the current execution metadata.
-func (f *ExecutionMetadataFetcher) Get() *ExecutionMetadata {
+func (f *ExecutionMetadataFetcher) Get() *xatu.ExecutionMetadata {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
 
@@ -176,7 +164,7 @@ func (f *ExecutionMetadataFetcher) Get() *ExecutionMetadata {
 
 // Update updates the cached metadata from an observed engine_getClientVersionV1 response.
 // This is used for passive observation when the CL calls this method.
-func (f *ExecutionMetadataFetcher) Update(versions []ClientVersionV1) {
+func (f *ExecutionMetadataFetcher) Update(versions []xatu.ClientVersionV1) {
 	if len(versions) == 0 {
 		return
 	}
@@ -247,7 +235,7 @@ func (f *ExecutionMetadataFetcher) fetch(ctx context.Context) error {
 		"jsonrpc": "2.0",
 		"method":  "engine_getClientVersionV1",
 		"params": []any{
-			ClientVersionV1{
+			xatu.ClientVersionV1{
 				Code:    "RS", // rpc-snooper
 				Name:    "rpc-snooper",
 				Version: "v0.0.0",
@@ -296,7 +284,7 @@ func (f *ExecutionMetadataFetcher) fetch(ctx context.Context) error {
 
 	// Parse JSON-RPC response
 	var rpcResp struct {
-		Result []ClientVersionV1 `json:"result"`
+		Result []xatu.ClientVersionV1 `json:"result"`
 		Error  *struct {
 			Code    int    `json:"code"`
 			Message string `json:"message"`
@@ -332,12 +320,12 @@ func (f *ExecutionMetadataFetcher) fetch(ctx context.Context) error {
 }
 
 // parseClientVersion converts a ClientVersionV1 to ExecutionMetadata.
-func (f *ExecutionMetadataFetcher) parseClientVersion(cv ClientVersionV1) *ExecutionMetadata {
+func (f *ExecutionMetadataFetcher) parseClientVersion(cv xatu.ClientVersionV1) *xatu.ExecutionMetadata {
 	// Parse version string (e.g., "v1.14.0" or "1.14.0")
 	version := cv.Version
 	versionMajor, versionMinor, versionPatch := parseVersion(version)
 
-	return &ExecutionMetadata{
+	return &xatu.ExecutionMetadata{
 		Implementation: cv.Name,
 		Version:        version,
 		VersionMajor:   versionMajor,
