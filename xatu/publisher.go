@@ -120,9 +120,17 @@ func (p *publisher) Stop(ctx context.Context) error {
 }
 
 // Publish sends a decorated event to all sinks.
+// Events are dropped if execution metadata is not yet available.
 func (p *publisher) Publish(ctx context.Context, event *xatu.DecoratedEvent) error {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
+
+	// Don't publish events until we have execution metadata
+	if p.metadataProvider == nil || p.metadataProvider.Get() == nil {
+		p.log.Debug("dropping event: execution metadata not yet available")
+
+		return nil
+	}
 
 	var lastErr error
 
