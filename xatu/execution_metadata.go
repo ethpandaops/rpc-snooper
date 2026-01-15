@@ -1,0 +1,418 @@
+package xatu
+
+import (
+	"bytes"
+	"context"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/golang-jwt/jwt/v5"
+
+	xatu "github.com/ethpandaops/xatu/pkg/proto/xatu"
+	"github.com/sirupsen/logrus"
+)
+
+const (
+	// refreshInterval is how often to refresh execution metadata.
+	refreshInterval = 60 * time.Second
+
+	// fetchTimeout is the timeout for fetching execution metadata.
+	fetchTimeout = 5 * time.Second
+
+	// maxRetries is the maximum number of retries for initial fetch.
+	// Keep low since not all ELs support engine_getClientVersionV1.
+	maxRetries = 3
+
+	// retryDelay is the delay between retries.
+	retryDelay = 2 * time.Second
+)
+
+// ExecutionMetadata holds cached execution client information.
+type ExecutionMetadata struct {
+	Implementation string
+	Version        string
+	VersionMajor   string
+	VersionMinor   string
+	VersionPatch   string
+}
+
+// ToProto converts the metadata to the xatu proto format.
+func (m *ExecutionMetadata) ToProto() *xatu.ClientMeta_Ethereum_Execution {
+	if m == nil {
+		return nil
+	}
+
+	return &xatu.ClientMeta_Ethereum_Execution{
+		Implementation: m.Implementation,
+		Version:        m.Version,
+		VersionMajor:   m.VersionMajor,
+		VersionMinor:   m.VersionMinor,
+		VersionPatch:   m.VersionPatch,
+	}
+}
+
+// ClientVersionV1 represents the response from engine_getClientVersionV1.
+// See: https://github.com/ethereum/execution-apis/blob/main/src/engine/identification.md
+type ClientVersionV1 struct {
+	Code    string `json:"code"`    // 2-letter client code (e.g., "GE" for Geth)
+	Name    string `json:"name"`    // Human-readable name (e.g., "Geth")
+	Version string `json:"version"` // Version string (e.g., "v1.14.0")
+	Commit  string `json:"commit"`  // 4-byte commit hash
+}
+
+// ExecutionMetadataFetcher manages fetching and caching execution client metadata.
+type ExecutionMetadataFetcher struct {
+	targetURL  *url.URL
+	jwtSecret  []byte
+	log        logrus.FieldLogger
+	httpClient *http.Client
+
+	mu       sync.RWMutex
+	metadata *ExecutionMetadata
+
+	// ready signals when initial metadata has been fetched
+	ready     chan struct{}
+	readyOnce sync.Once
+
+	// done signals shutdown
+	done chan struct{}
+	wg   sync.WaitGroup
+}
+
+// NewExecutionMetadataFetcher creates a new ExecutionMetadataFetcher.
+func NewExecutionMetadataFetcher(targetURL *url.URL, jwtSecret string, log logrus.FieldLogger) *ExecutionMetadataFetcher {
+	secret := parseJWTSecret(jwtSecret)
+
+	return &ExecutionMetadataFetcher{
+		targetURL: targetURL,
+		jwtSecret: secret,
+		log:       log.WithField("component", "execution_metadata"),
+		httpClient: &http.Client{
+			Timeout: fetchTimeout,
+		},
+		ready: make(chan struct{}),
+		done:  make(chan struct{}),
+	}
+}
+
+// parseJWTSecret parses a hex-encoded JWT secret, handling optional "0x" prefix.
+func parseJWTSecret(s string) []byte {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+
+	s = strings.TrimPrefix(s, "0x")
+
+	secret, err := hex.DecodeString(s)
+	if err != nil {
+		return nil
+	}
+
+	return secret
+}
+
+// createJWTToken creates a JWT token for Engine API authentication.
+func (f *ExecutionMetadataFetcher) createJWTToken() (string, error) {
+	if len(f.jwtSecret) == 0 {
+		return "", fmt.Errorf("no JWT secret configured")
+	}
+
+	now := time.Now()
+	claims := jwt.MapClaims{
+		"iat": now.Unix(),
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+
+	return token.SignedString(f.jwtSecret)
+}
+
+// Start begins fetching execution metadata. It blocks until initial metadata
+// is successfully fetched (with retries) or the context is cancelled.
+func (f *ExecutionMetadataFetcher) Start(ctx context.Context) error {
+	// Fetch initial metadata with retries
+	if err := f.fetchWithRetries(ctx); err != nil {
+		return fmt.Errorf("failed to fetch initial execution metadata: %w", err)
+	}
+
+	// Signal ready
+	f.readyOnce.Do(func() {
+		close(f.ready)
+	})
+
+	// Start background refresh goroutine
+	f.wg.Add(1)
+
+	go f.refreshLoop(ctx)
+
+	return nil
+}
+
+// Stop gracefully shuts down the fetcher.
+func (f *ExecutionMetadataFetcher) Stop() {
+	close(f.done)
+	f.wg.Wait()
+}
+
+// Ready returns a channel that is closed when initial metadata is available.
+func (f *ExecutionMetadataFetcher) Ready() <-chan struct{} {
+	return f.ready
+}
+
+// Get returns the current execution metadata.
+func (f *ExecutionMetadataFetcher) Get() *ExecutionMetadata {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+
+	return f.metadata
+}
+
+// Update updates the cached metadata from an observed engine_getClientVersionV1 response.
+// This is used for passive observation when the CL calls this method.
+func (f *ExecutionMetadataFetcher) Update(versions []ClientVersionV1) {
+	if len(versions) == 0 {
+		return
+	}
+
+	// Use the first client version (in case of multiplexer, we just take the first)
+	cv := versions[0]
+	metadata := f.parseClientVersion(cv)
+
+	f.mu.Lock()
+	f.metadata = metadata
+	f.mu.Unlock()
+
+	f.log.WithFields(logrus.Fields{
+		"implementation": metadata.Implementation,
+		"version":        metadata.Version,
+	}).Debug("updated execution metadata from observed response")
+}
+
+// fetchWithRetries attempts to fetch metadata with retries.
+func (f *ExecutionMetadataFetcher) fetchWithRetries(ctx context.Context) error {
+	var lastErr error
+
+	for i := range maxRetries {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		if err := f.fetch(ctx); err != nil {
+			lastErr = err
+
+			f.log.WithError(err).WithField("attempt", i+1).Warn("failed to fetch execution metadata, retrying...")
+
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(retryDelay):
+			}
+
+			continue
+		}
+
+		return nil
+	}
+
+	return fmt.Errorf("exhausted retries: %w", lastErr)
+}
+
+// fetch performs a single fetch of execution metadata.
+func (f *ExecutionMetadataFetcher) fetch(ctx context.Context) error {
+	// Build JSON-RPC request for engine_getClientVersionV1
+	// The method takes a ClientVersionV1 param identifying the caller
+	reqBody := map[string]any{
+		"jsonrpc": "2.0",
+		"method":  "engine_getClientVersionV1",
+		"params": []any{
+			ClientVersionV1{
+				Code:    "RS", // rpc-snooper
+				Name:    "rpc-snooper",
+				Version: "v0.0.0",
+				Commit:  "00000000",
+			},
+		},
+		"id": 1,
+	}
+
+	reqBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, f.targetURL.String(), bytes.NewReader(reqBytes))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+
+	// Add JWT auth header if we have a secret
+	if len(f.jwtSecret) > 0 {
+		token, err := f.createJWTToken()
+		if err != nil {
+			return fmt.Errorf("failed to create JWT token: %w", err)
+		}
+
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+
+	resp, err := f.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to execute request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	// Parse JSON-RPC response
+	var rpcResp struct {
+		Result []ClientVersionV1 `json:"result"`
+		Error  *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+
+	if err := json.Unmarshal(body, &rpcResp); err != nil {
+		return fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+
+	if rpcResp.Error != nil {
+		return fmt.Errorf("RPC error %d: %s", rpcResp.Error.Code, rpcResp.Error.Message)
+	}
+
+	if len(rpcResp.Result) == 0 {
+		return fmt.Errorf("empty result from engine_getClientVersionV1")
+	}
+
+	// Parse and store metadata
+	cv := rpcResp.Result[0]
+	metadata := f.parseClientVersion(cv)
+
+	f.mu.Lock()
+	f.metadata = metadata
+	f.mu.Unlock()
+
+	f.log.WithFields(logrus.Fields{
+		"implementation": metadata.Implementation,
+		"version":        metadata.Version,
+	}).Info("fetched execution metadata")
+
+	return nil
+}
+
+// parseClientVersion converts a ClientVersionV1 to ExecutionMetadata.
+func (f *ExecutionMetadataFetcher) parseClientVersion(cv ClientVersionV1) *ExecutionMetadata {
+	// Parse version string (e.g., "v1.14.0" or "1.14.0")
+	version := cv.Version
+	versionMajor, versionMinor, versionPatch := parseVersion(version)
+
+	return &ExecutionMetadata{
+		Implementation: cv.Name,
+		Version:        version,
+		VersionMajor:   versionMajor,
+		VersionMinor:   versionMinor,
+		VersionPatch:   versionPatch,
+	}
+}
+
+// parseVersion parses a version string into major, minor, patch components.
+func parseVersion(version string) (major, minor, patch string) {
+	if version == "" {
+		return "", "", ""
+	}
+
+	// Remove 'v' prefix if present
+	if version[0] == 'v' {
+		version = version[1:]
+	}
+
+	// Split by '-' or '+' to get core version
+	coreVersion := version
+
+	for i, c := range version {
+		if c == '-' || c == '+' {
+			coreVersion = version[:i]
+
+			break
+		}
+	}
+
+	// Split by '.' to get major.minor.patch
+	parts := splitBy(coreVersion, '.')
+	if len(parts) > 0 {
+		major = parts[0]
+	}
+
+	if len(parts) > 1 {
+		minor = parts[1]
+	}
+
+	if len(parts) > 2 {
+		patch = parts[2]
+	}
+
+	return major, minor, patch
+}
+
+// splitBy splits a string by a delimiter.
+func splitBy(s string, delim rune) []string {
+	var parts []string
+
+	start := 0
+
+	for i, c := range s {
+		if c == delim {
+			if i > start {
+				parts = append(parts, s[start:i])
+			}
+
+			start = i + 1
+		}
+	}
+
+	if start < len(s) {
+		parts = append(parts, s[start:])
+	}
+
+	return parts
+}
+
+// refreshLoop periodically refreshes execution metadata.
+func (f *ExecutionMetadataFetcher) refreshLoop(ctx context.Context) {
+	defer f.wg.Done()
+
+	ticker := time.NewTicker(refreshInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-f.done:
+			return
+		case <-ticker.C:
+			if err := f.fetch(ctx); err != nil {
+				f.log.WithError(err).Warn("failed to refresh execution metadata")
+			}
+		}
+	}
+}

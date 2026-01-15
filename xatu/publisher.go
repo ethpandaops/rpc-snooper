@@ -26,6 +26,11 @@ const (
 	defaultWorkers            = 5
 )
 
+// ExecutionMetadataProvider provides execution client metadata.
+type ExecutionMetadataProvider interface {
+	Get() *ExecutionMetadata
+}
+
 // Publisher manages event sinks and publishes decorated events.
 type Publisher interface {
 	// Start initializes all sinks.
@@ -39,12 +44,16 @@ type Publisher interface {
 
 	// ClientMeta returns the base client metadata for events.
 	ClientMeta() *xatu.ClientMeta
+
+	// SetMetadataProvider sets the execution metadata provider.
+	SetMetadataProvider(provider ExecutionMetadataProvider)
 }
 
 type publisher struct {
-	config *Config
-	log    logrus.FieldLogger
-	sinks  []output.Sink
+	config           *Config
+	log              logrus.FieldLogger
+	sinks            []output.Sink
+	metadataProvider ExecutionMetadataProvider
 
 	mu sync.RWMutex
 }
@@ -56,6 +65,14 @@ func NewPublisher(config *Config, log logrus.FieldLogger) Publisher {
 		log:    log.WithField("component", "xatu_publisher"),
 		sinks:  make([]output.Sink, 0),
 	}
+}
+
+// SetMetadataProvider sets the execution metadata provider.
+func (p *publisher) SetMetadataProvider(provider ExecutionMetadataProvider) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.metadataProvider = provider
 }
 
 // Start initializes all configured sinks.
@@ -121,13 +138,28 @@ func (p *publisher) Publish(ctx context.Context, event *xatu.DecoratedEvent) err
 
 // ClientMeta returns the base client metadata for events.
 func (p *publisher) ClientMeta() *xatu.ClientMeta {
-	return &xatu.ClientMeta{
+	meta := &xatu.ClientMeta{
 		Name:           p.config.Name,
 		Version:        utils.GetBuildVersion(),
 		Implementation: "rpc-snooper",
 		Labels:         p.config.Labels,
-		ModuleName:     xatu.ModuleName_EL_MIMICRY,
+		ModuleName:     xatu.ModuleName_RPC_SNOOPER,
 	}
+
+	// Add execution metadata if available
+	p.mu.RLock()
+	provider := p.metadataProvider
+	p.mu.RUnlock()
+
+	if provider != nil {
+		if execMeta := provider.Get(); execMeta != nil {
+			meta.Ethereum = &xatu.ClientMeta_Ethereum{
+				Execution: execMeta.ToProto(),
+			}
+		}
+	}
+
+	return meta
 }
 
 //nolint:ireturn // Interface return is intentional for sink abstraction
@@ -265,4 +297,7 @@ func (p *noopPublisher) Publish(_ context.Context, _ *xatu.DecoratedEvent) error
 
 func (p *noopPublisher) ClientMeta() *xatu.ClientMeta {
 	return nil
+}
+
+func (p *noopPublisher) SetMetadataProvider(_ ExecutionMetadataProvider) {
 }

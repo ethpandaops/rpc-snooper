@@ -35,6 +35,10 @@ type Config struct {
 	// Headers are custom headers for HTTP/Xatu outputs.
 	Headers map[string]string
 
+	// JWTSecret is the hex-encoded JWT secret for Engine API authentication.
+	// Required to fetch execution client metadata on startup.
+	JWTSecret string
+
 	// MaxQueueSize is the maximum number of events to buffer before dropping.
 	MaxQueueSize int
 

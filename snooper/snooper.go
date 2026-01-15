@@ -56,7 +56,7 @@ func NewSnooper(target string, logger logrus.FieldLogger, xatuConfig *xatu.Confi
 	}
 
 	// Create Xatu service
-	xatuService, err := xatu.NewService(xatuConfig, logger)
+	xatuService, err := xatu.NewService(xatuConfig, targetURL, logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create xatu service: %w", err)
 	}

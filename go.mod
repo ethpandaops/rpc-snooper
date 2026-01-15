@@ -2,13 +2,12 @@ module github.com/ethpandaops/rpc-snooper
 
 go 1.25.1
 
-replace github.com/ethpandaops/xatu => github.com/ethpandaops/xatu v0.0.0-20260114233106-ab4345fae1cf
-
 require (
 	github.com/andybalholm/brotli v1.2.0
 	github.com/creasty/defaults v1.8.0
-	github.com/ethpandaops/xatu v1.7.4
+	github.com/ethpandaops/xatu v1.8.0
 	github.com/fatih/color v1.18.0
+	github.com/golang-jwt/jwt/v5 v5.3.0
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/mux v1.8.1
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
