@@ -2,7 +2,7 @@ module github.com/ethpandaops/rpc-snooper
 
 go 1.25.1
 
-replace github.com/ethpandaops/xatu => github.com/ethpandaops/xatu v0.0.0-20260114125000-ab4345fae1cf
+replace github.com/ethpandaops/xatu => github.com/ethpandaops/xatu v0.0.0-20260114233106-ab4345fae1cf
 
 require (
 	github.com/andybalholm/brotli v1.2.0
