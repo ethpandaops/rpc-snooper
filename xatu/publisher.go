@@ -23,6 +23,7 @@ const (
 	defaultMaxExportBatchSize = 512
 	defaultBatchTimeout       = 5 * time.Second
 	defaultExportTimeout      = 30 * time.Second
+	defaultWorkers            = 5
 )
 
 // Publisher manages event sinks and publishes decorated events.
@@ -148,10 +149,10 @@ func (p *publisher) createSink(outConfig OutputConfig, index int) (output.Sink, 
 		conf := &http.Config{
 			Address:            outConfig.Address,
 			Headers:            p.config.Headers,
-			MaxQueueSize:       defaultMaxQueueSize,
-			BatchTimeout:       defaultBatchTimeout,
-			ExportTimeout:      defaultExportTimeout,
-			MaxExportBatchSize: defaultMaxExportBatchSize,
+			MaxQueueSize:       p.getMaxQueueSize(),
+			BatchTimeout:       p.getBatchTimeout(),
+			ExportTimeout:      p.getExportTimeout(),
+			MaxExportBatchSize: p.getMaxExportBatchSize(),
 		}
 		if err := defaults.Set(conf); err != nil {
 			return nil, fmt.Errorf("failed to set http defaults: %w", err)
@@ -164,10 +165,12 @@ func (p *publisher) createSink(outConfig OutputConfig, index int) (output.Sink, 
 			Address:            outConfig.Address,
 			TLS:                p.config.TLS,
 			Headers:            p.config.Headers,
-			MaxQueueSize:       defaultMaxQueueSize,
-			BatchTimeout:       defaultBatchTimeout,
-			ExportTimeout:      defaultExportTimeout,
-			MaxExportBatchSize: defaultMaxExportBatchSize,
+			MaxQueueSize:       p.getMaxQueueSize(),
+			BatchTimeout:       p.getBatchTimeout(),
+			ExportTimeout:      p.getExportTimeout(),
+			MaxExportBatchSize: p.getMaxExportBatchSize(),
+			Workers:            p.getWorkers(),
+			KeepAlive:          p.getKeepAliveConfig(),
 		}
 		if err := defaults.Set(conf); err != nil {
 			return nil, fmt.Errorf("failed to set xatu defaults: %w", err)
@@ -178,6 +181,66 @@ func (p *publisher) createSink(outConfig OutputConfig, index int) (output.Sink, 
 	default:
 		return nil, fmt.Errorf("unknown output type: %s", outConfig.Type)
 	}
+}
+
+// Config getter helpers that return configured values or defaults.
+
+func (p *publisher) getMaxQueueSize() int {
+	if p.config.MaxQueueSize > 0 {
+		return p.config.MaxQueueSize
+	}
+
+	return defaultMaxQueueSize
+}
+
+func (p *publisher) getMaxExportBatchSize() int {
+	if p.config.MaxExportBatchSize > 0 {
+		return p.config.MaxExportBatchSize
+	}
+
+	return defaultMaxExportBatchSize
+}
+
+func (p *publisher) getWorkers() int {
+	if p.config.Workers > 0 {
+		return p.config.Workers
+	}
+
+	return defaultWorkers
+}
+
+func (p *publisher) getBatchTimeout() time.Duration {
+	if p.config.BatchTimeout > 0 {
+		return p.config.BatchTimeout
+	}
+
+	return defaultBatchTimeout
+}
+
+func (p *publisher) getExportTimeout() time.Duration {
+	if p.config.ExportTimeout > 0 {
+		return p.config.ExportTimeout
+	}
+
+	return defaultExportTimeout
+}
+
+func (p *publisher) getKeepAliveConfig() xatuOutput.KeepAliveConfig {
+	cfg := xatuOutput.KeepAliveConfig{}
+
+	if p.config.KeepAlive.Enabled {
+		cfg.Enabled = &p.config.KeepAlive.Enabled
+	}
+
+	if p.config.KeepAlive.Time > 0 {
+		cfg.Time = p.config.KeepAlive.Time
+	}
+
+	if p.config.KeepAlive.Timeout > 0 {
+		cfg.Timeout = p.config.KeepAlive.Timeout
+	}
+
+	return cfg
 }
 
 // noopPublisher is a no-op implementation for when Xatu is disabled.

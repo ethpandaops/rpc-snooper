@@ -4,6 +4,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ethpandaops/rpc-snooper/snooper"
 	"github.com/ethpandaops/rpc-snooper/utils"
@@ -28,12 +29,20 @@ type CliArgs struct {
 	metricsBind string
 
 	// Xatu integration
-	xatuEnabled bool
-	xatuName    string
-	xatuOutputs []string
-	xatuLabels  []string
-	xatuTLS     bool
-	xatuHeaders []string
+	xatuEnabled            bool
+	xatuName               string
+	xatuOutputs            []string
+	xatuLabels             []string
+	xatuTLS                bool
+	xatuHeaders            []string
+	xatuMaxQueueSize       int
+	xatuMaxExportBatchSize int
+	xatuWorkers            int
+	xatuBatchTimeout       time.Duration
+	xatuExportTimeout      time.Duration
+	xatuKeepAliveEnabled   bool
+	xatuKeepAliveTime      time.Duration
+	xatuKeepAliveTimeout   time.Duration
 }
 
 func getEnvBool(key string, defaultValue bool) bool { //nolint:unparam // ignore
@@ -72,18 +81,38 @@ func getEnvStringSlice(key string) []string {
 	return nil
 }
 
+func getEnvDuration(key string, defaultValue time.Duration) time.Duration { //nolint:unparam // ignore
+	if value := os.Getenv(key); value != "" {
+		if parsed, err := time.ParseDuration(value); err == nil {
+			return parsed
+		}
+	}
+
+	return defaultValue
+}
+
 func buildXatuConfig(args *CliArgs, logger logrus.FieldLogger) *xatu.Config {
 	if !args.xatuEnabled {
 		return &xatu.Config{Enabled: false}
 	}
 
 	config := &xatu.Config{
-		Enabled: true,
-		Name:    args.xatuName,
-		TLS:     args.xatuTLS,
-		Labels:  make(map[string]string),
-		Headers: make(map[string]string),
-		Outputs: make([]xatu.OutputConfig, 0, len(args.xatuOutputs)),
+		Enabled:            true,
+		Name:               args.xatuName,
+		TLS:                args.xatuTLS,
+		Labels:             make(map[string]string),
+		Headers:            make(map[string]string),
+		Outputs:            make([]xatu.OutputConfig, 0, len(args.xatuOutputs)),
+		MaxQueueSize:       args.xatuMaxQueueSize,
+		MaxExportBatchSize: args.xatuMaxExportBatchSize,
+		Workers:            args.xatuWorkers,
+		BatchTimeout:       args.xatuBatchTimeout,
+		ExportTimeout:      args.xatuExportTimeout,
+		KeepAlive: xatu.KeepAliveConfig{
+			Enabled: args.xatuKeepAliveEnabled,
+			Time:    args.xatuKeepAliveTime,
+			Timeout: args.xatuKeepAliveTimeout,
+		},
 	}
 
 	// Parse outputs
@@ -142,12 +171,20 @@ func main() {
 		metricsBind: getEnvString("SNOOPER_METRICS_BIND", "127.0.0.1"),
 
 		// Xatu defaults from environment
-		xatuEnabled: getEnvBool("SNOOPER_XATU_ENABLED", false),
-		xatuName:    getEnvString("SNOOPER_XATU_NAME", ""),
-		xatuOutputs: getEnvStringSlice("SNOOPER_XATU_OUTPUTS"),
-		xatuLabels:  getEnvStringSlice("SNOOPER_XATU_LABELS"),
-		xatuTLS:     getEnvBool("SNOOPER_XATU_TLS", false),
-		xatuHeaders: getEnvStringSlice("SNOOPER_XATU_HEADERS"),
+		xatuEnabled:            getEnvBool("SNOOPER_XATU_ENABLED", false),
+		xatuName:               getEnvString("SNOOPER_XATU_NAME", ""),
+		xatuOutputs:            getEnvStringSlice("SNOOPER_XATU_OUTPUTS"),
+		xatuLabels:             getEnvStringSlice("SNOOPER_XATU_LABELS"),
+		xatuTLS:                getEnvBool("SNOOPER_XATU_TLS", false),
+		xatuHeaders:            getEnvStringSlice("SNOOPER_XATU_HEADERS"),
+		xatuMaxQueueSize:       getEnvInt("SNOOPER_XATU_MAX_QUEUE_SIZE", 0),
+		xatuMaxExportBatchSize: getEnvInt("SNOOPER_XATU_MAX_EXPORT_BATCH_SIZE", 0),
+		xatuWorkers:            getEnvInt("SNOOPER_XATU_WORKERS", 0),
+		xatuBatchTimeout:       getEnvDuration("SNOOPER_XATU_BATCH_TIMEOUT", 0),
+		xatuExportTimeout:      getEnvDuration("SNOOPER_XATU_EXPORT_TIMEOUT", 0),
+		xatuKeepAliveEnabled:   getEnvBool("SNOOPER_XATU_KEEPALIVE_ENABLED", false),
+		xatuKeepAliveTime:      getEnvDuration("SNOOPER_XATU_KEEPALIVE_TIME", 0),
+		xatuKeepAliveTimeout:   getEnvDuration("SNOOPER_XATU_KEEPALIVE_TIMEOUT", 0),
 	}
 
 	flags := pflag.NewFlagSet("snooper", pflag.ExitOnError)
@@ -171,6 +208,14 @@ func main() {
 	flags.StringSliceVar(&cliArgs.xatuLabels, "xatu-label", cliArgs.xatuLabels, "Xatu label (format: key=value, can be repeated) (env: SNOOPER_XATU_LABELS)")
 	flags.BoolVar(&cliArgs.xatuTLS, "xatu-tls", cliArgs.xatuTLS, "Enable TLS for xatu:// outputs (env: SNOOPER_XATU_TLS)")
 	flags.StringSliceVar(&cliArgs.xatuHeaders, "xatu-header", cliArgs.xatuHeaders, "Xatu output header (format: name=value, can be repeated) (env: SNOOPER_XATU_HEADERS)")
+	flags.IntVar(&cliArgs.xatuMaxQueueSize, "xatu-max-queue-size", cliArgs.xatuMaxQueueSize, "Max events to buffer before dropping (env: SNOOPER_XATU_MAX_QUEUE_SIZE)")
+	flags.IntVar(&cliArgs.xatuMaxExportBatchSize, "xatu-max-export-batch-size", cliArgs.xatuMaxExportBatchSize, "Max events per batch export (env: SNOOPER_XATU_MAX_EXPORT_BATCH_SIZE)")
+	flags.IntVar(&cliArgs.xatuWorkers, "xatu-workers", cliArgs.xatuWorkers, "Number of concurrent export workers (env: SNOOPER_XATU_WORKERS)")
+	flags.DurationVar(&cliArgs.xatuBatchTimeout, "xatu-batch-timeout", cliArgs.xatuBatchTimeout, "Time to wait before exporting partial batch (env: SNOOPER_XATU_BATCH_TIMEOUT)")
+	flags.DurationVar(&cliArgs.xatuExportTimeout, "xatu-export-timeout", cliArgs.xatuExportTimeout, "Timeout for each export operation (env: SNOOPER_XATU_EXPORT_TIMEOUT)")
+	flags.BoolVar(&cliArgs.xatuKeepAliveEnabled, "xatu-keepalive-enabled", cliArgs.xatuKeepAliveEnabled, "Enable gRPC keepalive (env: SNOOPER_XATU_KEEPALIVE_ENABLED)")
+	flags.DurationVar(&cliArgs.xatuKeepAliveTime, "xatu-keepalive-time", cliArgs.xatuKeepAliveTime, "Duration after which keepalive ping is sent (env: SNOOPER_XATU_KEEPALIVE_TIME)")
+	flags.DurationVar(&cliArgs.xatuKeepAliveTimeout, "xatu-keepalive-timeout", cliArgs.xatuKeepAliveTimeout, "Duration to wait for keepalive response (env: SNOOPER_XATU_KEEPALIVE_TIMEOUT)")
 
 	//nolint:errcheck // ignore
 	flags.Parse(os.Args)

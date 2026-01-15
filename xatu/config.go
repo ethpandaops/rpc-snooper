@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // Output type constants.
@@ -33,6 +34,36 @@ type Config struct {
 
 	// Headers are custom headers for HTTP/Xatu outputs.
 	Headers map[string]string
+
+	// MaxQueueSize is the maximum number of events to buffer before dropping.
+	MaxQueueSize int
+
+	// MaxExportBatchSize is the maximum number of events per batch export.
+	MaxExportBatchSize int
+
+	// Workers is the number of concurrent export workers.
+	Workers int
+
+	// BatchTimeout is how long to wait before exporting a partial batch.
+	BatchTimeout time.Duration
+
+	// ExportTimeout is the timeout for each export operation.
+	ExportTimeout time.Duration
+
+	// KeepAlive configures gRPC keepalive settings.
+	KeepAlive KeepAliveConfig
+}
+
+// KeepAliveConfig holds gRPC keepalive settings.
+type KeepAliveConfig struct {
+	// Enabled controls whether keepalive is active.
+	Enabled bool
+
+	// Time is the duration after which a keepalive ping is sent.
+	Time time.Duration
+
+	// Timeout is the duration to wait for a keepalive response.
+	Timeout time.Duration
 }
 
 // OutputConfig defines a single output sink configuration.
