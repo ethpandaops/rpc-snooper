@@ -26,12 +26,11 @@ const (
 	// fetchTimeout is the timeout for fetching execution metadata.
 	fetchTimeout = 5 * time.Second
 
-	// maxRetries is the maximum number of retries for initial fetch.
-	// Keep low since not all ELs support engine_getClientVersionV1.
-	maxRetries = 3
+	// initialRetryDelay is the initial delay between retries.
+	initialRetryDelay = 2 * time.Second
 
-	// retryDelay is the delay between retries.
-	retryDelay = 2 * time.Second
+	// maxRetryDelay is the maximum delay between retries.
+	maxRetryDelay = 30 * time.Second
 )
 
 // ExecutionMetadata holds cached execution client information.
@@ -196,26 +195,41 @@ func (f *ExecutionMetadataFetcher) Update(versions []ClientVersionV1) {
 	}).Debug("updated execution metadata from observed response")
 }
 
-// fetchWithRetries attempts to fetch metadata with retries.
+// fetchWithRetries attempts to fetch metadata with retries indefinitely.
+// Uses exponential backoff up to maxRetryDelay.
 func (f *ExecutionMetadataFetcher) fetchWithRetries(ctx context.Context) error {
-	var lastErr error
+	delay := initialRetryDelay
+	attempt := 0
 
-	for i := range maxRetries {
+	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-f.done:
+			return fmt.Errorf("fetcher stopped")
 		default:
 		}
 
-		if err := f.fetch(ctx); err != nil {
-			lastErr = err
+		attempt++
 
-			f.log.WithError(err).WithField("attempt", i+1).Warn("failed to fetch execution metadata, retrying...")
+		if err := f.fetch(ctx); err != nil {
+			f.log.WithError(err).WithFields(logrus.Fields{
+				"attempt":    attempt,
+				"next_retry": delay,
+			}).Warn("failed to fetch execution metadata, retrying...")
 
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case <-time.After(retryDelay):
+			case <-f.done:
+				return fmt.Errorf("fetcher stopped")
+			case <-time.After(delay):
+			}
+
+			// Exponential backoff with cap
+			delay *= 2
+			if delay > maxRetryDelay {
+				delay = maxRetryDelay
 			}
 
 			continue
@@ -223,8 +237,6 @@ func (f *ExecutionMetadataFetcher) fetchWithRetries(ctx context.Context) error {
 
 		return nil
 	}
-
-	return fmt.Errorf("exhausted retries: %w", lastErr)
 }
 
 // fetch performs a single fetch of execution metadata.
