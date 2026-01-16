@@ -1,7 +1,6 @@
 package snooper
 
 import (
-	"bytes"
 	"compress/gzip"
 	"encoding/hex"
 	"encoding/json"
@@ -38,26 +37,31 @@ func (s *Snooper) beautifyJSON(body []byte) []byte {
 }
 
 type logReadCloser struct {
-	reader   io.Reader
-	buf      *bytes.Buffer
-	original io.ReadCloser
-	logFn    func(data []byte)
-	closed   bool
-	logger   logrus.FieldLogger
+	reader  io.Reader
+	closers []io.Closer
 }
 
 func (s *Snooper) createTeeLogStream(stream io.ReadCloser, logfn func(reader io.ReadCloser)) io.ReadCloser {
-	buf := new(bytes.Buffer)
-	teeReader := io.TeeReader(stream, buf)
+	logReader, logWriter := io.Pipe()
+	resStream := io.TeeReader(stream, logWriter)
+
+	go func() {
+		defer func() {
+			if err := recover(); err != nil {
+				if err2, ok := err.(error); ok {
+					s.logger.WithError(err2).Errorf("uncaught panic in log reader: %v, stack: %v", err, string(debug.Stack()))
+				} else {
+					s.logger.Errorf("uncaught panic in log reader: %v, stack: %v", err, string(debug.Stack()))
+				}
+			}
+		}()
+		defer logReader.Close()
+		logfn(logReader)
+	}()
 
 	return &logReadCloser{
-		reader:   teeReader,
-		buf:      buf,
-		original: stream,
-		logFn: func(data []byte) {
-			logfn(io.NopCloser(bytes.NewReader(data)))
-		},
-		logger: s.logger,
+		reader:  resStream,
+		closers: []io.Closer{stream, logReader, logWriter},
 	}
 }
 
@@ -66,37 +70,16 @@ func (r *logReadCloser) Read(p []byte) (n int, err error) {
 }
 
 func (r *logReadCloser) Close() error {
-	if r.closed {
-		return nil
+	var resErr error
+
+	for _, closer := range r.closers {
+		err := closer.Close()
+		if err != nil && resErr == nil {
+			resErr = err
+		}
 	}
 
-	r.closed = true
-
-	// Drain any remaining data from the tee reader into the buffer
-	_, _ = io.Copy(io.Discard, r.reader)
-
-	// Close original stream
-	err := r.original.Close()
-
-	// Capture buffer data before spawning goroutine
-	data := r.buf.Bytes()
-
-	// Spawn goroutine for async logging (preserves current behavior)
-	go func() {
-		defer func() {
-			if panicErr := recover(); panicErr != nil {
-				if err2, ok := panicErr.(error); ok {
-					r.logger.WithError(err2).Errorf("uncaught panic in log reader: %v, stack: %v", panicErr, string(debug.Stack()))
-				} else {
-					r.logger.Errorf("uncaught panic in log reader: %v, stack: %v", panicErr, string(debug.Stack()))
-				}
-			}
-		}()
-
-		r.logFn(data)
-	}()
-
-	return err
+	return resErr
 }
 
 func (s *Snooper) logRequest(ctx *ProxyCallContext, req *http.Request, body io.ReadCloser) {
