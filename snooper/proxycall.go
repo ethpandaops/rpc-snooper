@@ -2,7 +2,6 @@ package snooper
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -291,20 +290,14 @@ func (s *Snooper) createRequestProcessingStream(callCtx *ProxyCallContext, r *ht
 }
 
 // createResponseProcessingStream creates a streaming reader for response processing.
-// The response body is read immediately into a buffer to avoid blocking the client,
-// then waits for request logging to complete before processing (to preserve log order).
+// Uses buffered tee (bytes.Buffer) for zero-overhead streaming to the client.
+// Logging is triggered asynchronously when the stream closes.
 func (s *Snooper) createResponseProcessingStream(callCtx *ProxyCallContext, r *http.Request, resp *http.Response, callDuration time.Duration) io.ReadCloser {
-	// Create tee stream for logging (module processing now happens in log stream)
 	loggedStream := s.createTeeLogStream(resp.Body, func(reader io.ReadCloser) {
-		// Read immediately to drain the pipe - this prevents blocking the client
-		// while waiting for request logging to complete
-		bodyData, _ := io.ReadAll(reader)
-
 		// Wait for request logging to complete (preserves log ordering)
 		<-callCtx.reqSentChan
 
-		// Pass buffered data to logResponse via bytes.Reader (instant read since data is in memory)
-		s.logResponse(callCtx, r, resp, io.NopCloser(bytes.NewReader(bodyData)), callDuration)
+		s.logResponse(callCtx, r, resp, reader, callDuration)
 	})
 
 	return loggedStream
