@@ -219,6 +219,8 @@ When flow is disabled, all proxy requests return:
 ```
 --xatu-enabled              Enable Xatu event publishing (env: SNOOPER_XATU_ENABLED)
 --xatu-name                 Instance name for Xatu events (env: SNOOPER_XATU_NAME)
+--xatu-network-name         Ethereum network name, required (e.g., mainnet, sepolia) (env: SNOOPER_XATU_NETWORK_NAME)
+--xatu-network-id           Ethereum network ID, required (env: SNOOPER_XATU_NETWORK_ID)
 --xatu-output               Output sink, can be repeated (format: type:address) (env: SNOOPER_XATU_OUTPUTS)
 --xatu-label                Custom label, can be repeated (format: key=value) (env: SNOOPER_XATU_LABELS)
 --xatu-tls                  Enable TLS for xatu:// outputs (env: SNOOPER_XATU_TLS)
@@ -231,12 +233,15 @@ Output types: `stdout`, `http`, `xatu` (gRPC), `kafka`
 
 **Output to stdout (for debugging):**
 ```bash
-./snooper --xatu-enabled --xatu-name my-snooper --xatu-output stdout http://localhost:8551
+./snooper --xatu-enabled --xatu-name my-snooper \
+  --xatu-network-name mainnet --xatu-network-id 1 \
+  --xatu-output stdout http://localhost:8551
 ```
 
 **Output to Xatu server (gRPC):**
 ```bash
 ./snooper --xatu-enabled --xatu-name my-snooper \
+  --xatu-network-name mainnet --xatu-network-id 1 \
   --xatu-output xatu:xatu.example.com:8080 \
   --xatu-tls \
   http://localhost:8551
@@ -245,8 +250,8 @@ Output types: `stdout`, `http`, `xatu` (gRPC), `kafka`
 **With custom labels:**
 ```bash
 ./snooper --xatu-enabled --xatu-name my-snooper \
+  --xatu-network-name mainnet --xatu-network-id 1 \
   --xatu-output xatu:xatu.example.com:8080 \
-  --xatu-label network=mainnet \
   --xatu-label client=geth \
   http://localhost:8551
 ```
@@ -255,8 +260,10 @@ Output types: `stdout`, `http`, `xatu` (gRPC), `kafka`
 ```bash
 export SNOOPER_XATU_ENABLED=true
 export SNOOPER_XATU_NAME=my-snooper
+export SNOOPER_XATU_NETWORK_NAME=mainnet
+export SNOOPER_XATU_NETWORK_ID=1
 export SNOOPER_XATU_OUTPUTS=xatu:xatu.example.com:8080
-export SNOOPER_XATU_LABELS=network=mainnet,client=geth
+export SNOOPER_XATU_LABELS=client=geth
 export SNOOPER_XATU_TLS=true
 
 ./snooper http://localhost:8551

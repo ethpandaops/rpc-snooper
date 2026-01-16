@@ -32,6 +32,8 @@ type CliArgs struct {
 	// Xatu integration
 	xatuEnabled            bool
 	xatuName               string
+	xatuNetworkName        string
+	xatuNetworkID          uint64
 	xatuOutputs            []string
 	xatuLabels             []string
 	xatuTLS                bool
@@ -77,6 +79,16 @@ func getEnvInt(key string, defaultValue int) int {
 	return defaultValue
 }
 
+func getEnvUint64(key string, defaultValue uint64) uint64 {
+	if value := os.Getenv(key); value != "" {
+		if parsed, err := strconv.ParseUint(value, 10, 64); err == nil {
+			return parsed
+		}
+	}
+
+	return defaultValue
+}
+
 func getEnvStringSlice(key string) []string {
 	if value := os.Getenv(key); value != "" {
 		return strings.Split(value, ",")
@@ -103,6 +115,8 @@ func buildXatuConfig(args *CliArgs) (*xatu.Config, error) {
 	config := &xatu.Config{
 		Enabled:            true,
 		Name:               args.xatuName,
+		NetworkName:        args.xatuNetworkName,
+		NetworkID:          args.xatuNetworkID,
 		TLS:                args.xatuTLS,
 		Labels:             make(map[string]string, len(args.xatuLabels)),
 		Headers:            make(map[string]string, len(args.xatuHeaders)),
@@ -171,6 +185,8 @@ func main() {
 		// Xatu defaults from environment
 		xatuEnabled:            getEnvBool("SNOOPER_XATU_ENABLED", false),
 		xatuName:               getEnvString("SNOOPER_XATU_NAME", ""),
+		xatuNetworkName:        getEnvString("SNOOPER_XATU_NETWORK_NAME", ""),
+		xatuNetworkID:          getEnvUint64("SNOOPER_XATU_NETWORK_ID", 0),
 		xatuOutputs:            getEnvStringSlice("SNOOPER_XATU_OUTPUTS"),
 		xatuLabels:             getEnvStringSlice("SNOOPER_XATU_LABELS"),
 		xatuTLS:                getEnvBool("SNOOPER_XATU_TLS", false),
@@ -203,6 +219,8 @@ func main() {
 	// Xatu flags
 	flags.BoolVar(&cliArgs.xatuEnabled, "xatu-enabled", cliArgs.xatuEnabled, "Enable Xatu event publishing (env: SNOOPER_XATU_ENABLED)")
 	flags.StringVar(&cliArgs.xatuName, "xatu-name", cliArgs.xatuName, "Instance name for Xatu events (env: SNOOPER_XATU_NAME)")
+	flags.StringVar(&cliArgs.xatuNetworkName, "xatu-network-name", cliArgs.xatuNetworkName, "Ethereum network name (e.g., mainnet, sepolia) (env: SNOOPER_XATU_NETWORK_NAME)")
+	flags.Uint64Var(&cliArgs.xatuNetworkID, "xatu-network-id", cliArgs.xatuNetworkID, "Ethereum network ID (env: SNOOPER_XATU_NETWORK_ID)")
 	flags.StringSliceVar(&cliArgs.xatuOutputs, "xatu-output", cliArgs.xatuOutputs, "Xatu output sink (format: type:address, can be repeated) (env: SNOOPER_XATU_OUTPUTS)")
 	flags.StringSliceVar(&cliArgs.xatuLabels, "xatu-label", cliArgs.xatuLabels, "Xatu label (format: key=value, can be repeated) (env: SNOOPER_XATU_LABELS)")
 	flags.BoolVar(&cliArgs.xatuTLS, "xatu-tls", cliArgs.xatuTLS, "Enable TLS for xatu:// outputs (env: SNOOPER_XATU_TLS)")
@@ -273,6 +291,8 @@ func main() {
 	rpcSnooper, err := snooper.NewSnooper(cliArgs.target, logger, xatuConfig, cliArgs.jwtSecret)
 	if err != nil {
 		logger.Errorf("Failed initializing server: %v", err)
+
+		return
 	}
 
 	// Start separate API server if api-port is specified

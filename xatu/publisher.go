@@ -154,6 +154,14 @@ func (p *publisher) ClientMeta() *xatu.ClientMeta {
 		ModuleName:     xatu.ModuleName_RPC_SNOOPER,
 	}
 
+	// Add Ethereum metadata
+	meta.Ethereum = &xatu.ClientMeta_Ethereum{
+		Network: &xatu.ClientMeta_Ethereum_Network{
+			Name: p.config.NetworkName,
+			Id:   p.config.NetworkID,
+		},
+	}
+
 	// Add execution metadata if available
 	p.mu.RLock()
 	provider := p.metadataProvider
@@ -161,9 +169,7 @@ func (p *publisher) ClientMeta() *xatu.ClientMeta {
 
 	if provider != nil {
 		if execMeta := provider.Get(); execMeta != nil {
-			meta.Ethereum = &xatu.ClientMeta_Ethereum{
-				Execution: execMeta.ToProto(),
-			}
+			meta.Ethereum.Execution = execMeta.ToProto()
 		}
 	}
 
