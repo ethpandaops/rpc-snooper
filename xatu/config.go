@@ -23,6 +23,12 @@ type Config struct {
 	// Name identifies this rpc-snooper instance in events.
 	Name string
 
+	// NetworkName is the name of the Ethereum network (e.g., "mainnet", "sepolia").
+	NetworkName string
+
+	// NetworkID is the network ID of the Ethereum network.
+	NetworkID uint64
+
 	// Labels are custom key-value pairs added to event metadata.
 	Labels map[string]string
 
@@ -83,6 +89,14 @@ func (c *Config) Validate() error {
 
 	if c.Name == "" {
 		return errors.New("xatu name is required when enabled")
+	}
+
+	if c.NetworkName == "" {
+		return errors.New("xatu network name is required when enabled")
+	}
+
+	if c.NetworkID == 0 {
+		return errors.New("xatu network ID is required when enabled")
 	}
 
 	if len(c.Outputs) == 0 {
