@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,26 +15,44 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestResponseStreamingNotBlockedBySlowRequestChannel verifies that response streaming
-// to the client is not blocked while waiting for request logging to complete.
-// This tests the fix where we read the response body immediately before waiting
-// on reqSentChan, rather than waiting first (which would block the unbuffered pipe).
-func TestResponseStreamingNotBlockedBySlowRequestChannel(t *testing.T) {
-	// Create a mock upstream server that delays sending the request body
-	// but responds quickly once received
-	responseBody := []byte(`{"jsonrpc":"2.0","id":1,"result":"test"}`)
+// slowReader wraps a reader and adds artificial delay to each read operation.
+// This is used to simulate slow request body transmission.
+type slowReader struct {
+	reader   io.Reader
+	delay    time.Duration
+	readOnce sync.Once
+}
 
-	var requestReceived atomic.Bool
+func (s *slowReader) Read(p []byte) (n int, err error) {
+	s.readOnce.Do(func() {
+		time.Sleep(s.delay)
+	})
+
+	return s.reader.Read(p)
+}
+
+// TestClientResponseNotBlockedBySlowRequestBody verifies that a slow request body
+// does not block the response from reaching the client.
+func TestClientResponseNotBlockedBySlowRequestBody(t *testing.T) {
+	responseBody := []byte(`{"jsonrpc":"2.0","id":1,"result":"test"}`)
+	requestDelay := 100 * time.Millisecond
+
+	var upstreamReceivedRequest time.Time
+
+	var upstreamSentResponse time.Time
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Drain request body
+		upstreamReceivedRequest = time.Now()
+
+		// Read request body (this will be slow due to slowReader)
 		_, _ = io.ReadAll(r.Body)
 
-		requestReceived.Store(true)
-
+		// Send response immediately after reading request
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(responseBody)
+
+		upstreamSentResponse = time.Now()
 	}))
 	defer upstream.Close()
 
@@ -47,31 +64,35 @@ func TestResponseStreamingNotBlockedBySlowRequestChannel(t *testing.T) {
 
 	defer snooper.Shutdown()
 
-	// Create test request
-	reqBody := bytes.NewBufferString(`{"jsonrpc":"2.0","method":"test","params":[],"id":1}`)
-	req := httptest.NewRequest(http.MethodPost, "/", reqBody)
+	// Create a slow request body - this delays request logging completion
+	requestData := []byte(`{"jsonrpc":"2.0","method":"test","params":[],"id":1}`)
+	slowReqBody := &slowReader{
+		reader: bytes.NewReader(requestData),
+		delay:  requestDelay,
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/", slowReqBody)
 	req.Header.Set("Content-Type", "application/json")
+	req.ContentLength = int64(len(requestData))
 
 	rec := httptest.NewRecorder()
-
-	// Make the proxied request
 	start := time.Now()
 
 	snooper.ServeHTTP(rec, req)
 
-	elapsed := time.Since(start)
+	clientReceivedResponse := time.Since(start)
 
 	// Verify the response was correct
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Equal(t, responseBody, rec.Body.Bytes())
-	assert.True(t, requestReceived.Load())
 
-	// Log timing for reference
-	t.Logf("Request completed in %v", elapsed)
+	t.Logf("Request delay: %v", requestDelay)
+	t.Logf("Upstream received request at: %v", upstreamReceivedRequest.Sub(start))
+	t.Logf("Upstream sent response at: %v", upstreamSentResponse.Sub(start))
+	t.Logf("Client received response in: %v", clientReceivedResponse)
 }
 
-// TestLogOrderingPreserved verifies that even though response streaming is not blocked,
-// the log ordering (request before response) is still maintained.
+// TestLogOrderingPreserved verifies that request logs appear before response logs.
 func TestLogOrderingPreserved(t *testing.T) {
 	responseBody := []byte(`{"jsonrpc":"2.0","id":1,"result":"test"}`)
 
@@ -84,7 +105,6 @@ func TestLogOrderingPreserved(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	// Track log ordering
 	var logOrder []string
 
 	var logMu sync.Mutex
@@ -110,7 +130,6 @@ func TestLogOrderingPreserved(t *testing.T) {
 
 	defer snooper.Shutdown()
 
-	// Make request
 	reqBody := bytes.NewBufferString(`{"jsonrpc":"2.0","method":"test","params":[],"id":1}`)
 	req := httptest.NewRequest(http.MethodPost, "/", reqBody)
 	req.Header.Set("Content-Type", "application/json")
@@ -119,7 +138,7 @@ func TestLogOrderingPreserved(t *testing.T) {
 
 	snooper.ServeHTTP(rec, req)
 
-	// Wait a bit for async logging to complete
+	// Wait for async logging to complete
 	time.Sleep(100 * time.Millisecond)
 
 	// Verify ordering
@@ -131,11 +150,28 @@ func TestLogOrderingPreserved(t *testing.T) {
 	assert.Equal(t, "response", logOrder[1], "Response should be logged after request")
 }
 
-// TestLargeResponseStreaming verifies that large responses stream efficiently
-// without being fully buffered before the client receives data.
+// orderTrackingFormatter wraps a logrus formatter to track log ordering.
+type orderTrackingFormatter struct {
+	underlying logrus.Formatter
+	onLog      func(msg string)
+}
+
+func (f *orderTrackingFormatter) Format(entry *logrus.Entry) ([]byte, error) {
+	if f.onLog != nil {
+		f.onLog(entry.Message)
+	}
+
+	return f.underlying.Format(entry)
+}
+
+// TestLargeResponseStreaming verifies that large responses (like engine_getBlobs)
+// are handled correctly.
 func TestLargeResponseStreaming(t *testing.T) {
-	// Create a large response (1MB)
-	largeData := make([]byte, 1024*1024)
+	// Simulate 6 blobs worth of data (~1.5MB)
+	blobSize := 128 * 1024 // 128KB per blob
+	numBlobs := 6
+	largeData := make([]byte, blobSize*numBlobs)
+
 	for i := range largeData {
 		largeData[i] = byte(i % 256)
 	}
@@ -157,40 +193,111 @@ func TestLargeResponseStreaming(t *testing.T) {
 
 	defer snooper.Shutdown()
 
-	reqBody := bytes.NewBufferString(`{"jsonrpc":"2.0","method":"test","params":[],"id":1}`)
+	reqBody := bytes.NewBufferString(`{"jsonrpc":"2.0","method":"engine_getBlobsV1","params":[],"id":1}`)
 	req := httptest.NewRequest(http.MethodPost, "/", reqBody)
 	req.Header.Set("Content-Type", "application/json")
 
 	rec := httptest.NewRecorder()
-	start := time.Now()
 
 	snooper.ServeHTTP(rec, req)
 
-	elapsed := time.Since(start)
-
-	// Verify response
+	// Verify response integrity
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Equal(t, len(largeData), rec.Body.Len())
-
-	// Log timing for reference
-	t.Logf("Large response (1MB) streamed in %v", elapsed)
+	assert.Equal(t, largeData, rec.Body.Bytes())
 }
 
-// orderTrackingFormatter wraps a logrus formatter to track log ordering.
-type orderTrackingFormatter struct {
+// TestRequestAndResponseBodiesAreLogged verifies that request and response bodies
+// are captured and logged correctly.
+func TestRequestAndResponseBodiesAreLogged(t *testing.T) {
+	requestBody := `{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}`
+	responseBody := `{"jsonrpc":"2.0","id":1,"result":"0x1234"}`
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Verify upstream receives the request body correctly
+		receivedBody, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		assert.JSONEq(t, requestBody, string(receivedBody))
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(responseBody))
+	}))
+	defer upstream.Close()
+
+	var loggedRequestBody string
+
+	var loggedResponseBody string
+
+	var logMu sync.Mutex
+
+	logger := logrus.New()
+	logger.SetLevel(logrus.InfoLevel)
+	logger.SetFormatter(&contentCapturingFormatter{
+		underlying: &logrus.TextFormatter{},
+		onLog: func(entry *logrus.Entry) {
+			logMu.Lock()
+			defer logMu.Unlock()
+
+			body, ok := entry.Data["body"].(string)
+			if !ok {
+				return
+			}
+
+			if bytes.Contains([]byte(entry.Message), []byte("REQUEST")) {
+				loggedRequestBody = body
+			} else if bytes.Contains([]byte(entry.Message), []byte("RESPONSE")) {
+				loggedResponseBody = body
+			}
+		},
+	})
+
+	snooper, err := NewSnooper(upstream.URL, logger, nil, "")
+	require.NoError(t, err)
+
+	defer snooper.Shutdown()
+
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(requestBody))
+	req.Header.Set("Content-Type", "application/json")
+
+	rec := httptest.NewRecorder()
+
+	snooper.ServeHTTP(rec, req)
+
+	// Verify client receives correct response
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.JSONEq(t, responseBody, rec.Body.String())
+
+	// Wait for async logging to complete
+	time.Sleep(100 * time.Millisecond)
+
+	// Verify logged content
+	logMu.Lock()
+	defer logMu.Unlock()
+
+	require.NotEmpty(t, loggedRequestBody, "Request body should be logged")
+	require.NotEmpty(t, loggedResponseBody, "Response body should be logged")
+
+	// The logger beautifies JSON, so compare as JSON
+	assert.JSONEq(t, requestBody, loggedRequestBody, "Logged request body should match sent request")
+	assert.JSONEq(t, responseBody, loggedResponseBody, "Logged response body should match received response")
+}
+
+// contentCapturingFormatter wraps a logrus formatter to capture log entry data.
+type contentCapturingFormatter struct {
 	underlying logrus.Formatter
-	onLog      func(msg string)
+	onLog      func(entry *logrus.Entry)
 }
 
-func (f *orderTrackingFormatter) Format(entry *logrus.Entry) ([]byte, error) {
+func (f *contentCapturingFormatter) Format(entry *logrus.Entry) ([]byte, error) {
 	if f.onLog != nil {
-		f.onLog(entry.Message)
+		f.onLog(entry)
 	}
 
 	return f.underlying.Format(entry)
 }
 
-// TestConcurrentRequests verifies the fix works under concurrent load.
+// TestConcurrentRequests verifies the proxy handles concurrent requests correctly.
 func TestConcurrentRequests(t *testing.T) {
 	responseBody := []byte(`{"jsonrpc":"2.0","id":1,"result":"ok"}`)
 
@@ -217,7 +324,7 @@ func TestConcurrentRequests(t *testing.T) {
 
 	errors := make(chan error, numRequests)
 
-	for i := 0; i < numRequests; i++ {
+	for range numRequests {
 		wg.Add(1)
 
 		go func() {
@@ -235,6 +342,10 @@ func TestConcurrentRequests(t *testing.T) {
 			if rec.Code != http.StatusOK {
 				errors <- assert.AnError
 			}
+
+			if !bytes.Equal(rec.Body.Bytes(), responseBody) {
+				errors <- assert.AnError
+			}
 		}()
 	}
 
@@ -247,61 +358,5 @@ func TestConcurrentRequests(t *testing.T) {
 		errCount++
 	}
 
-	assert.Zero(t, errCount, "All concurrent requests should succeed")
-}
-
-// TestResponseNotBlockedBySlowRequestLogging creates a scenario where
-// request logging is artificially slow and verifies the response still
-// streams to the client without waiting.
-func TestResponseNotBlockedBySlowRequestLogging(t *testing.T) {
-	// This test verifies the core fix: response body reading happens
-	// BEFORE waiting on reqSentChan, so the pipe drains immediately.
-	responseBody := []byte(`{"jsonrpc":"2.0","id":1,"result":"success"}`)
-
-	// Track when response body is fully received by client
-	var clientReceivedResponse atomic.Bool
-
-	var responseTime time.Time
-
-	var timeMu sync.Mutex
-
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Read request body
-		_, _ = io.ReadAll(r.Body)
-
-		// Send response immediately
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(responseBody)
-	}))
-	defer upstream.Close()
-
-	logger := logrus.New()
-	logger.SetLevel(logrus.ErrorLevel)
-
-	snooper, err := NewSnooper(upstream.URL, logger, nil, "")
-	require.NoError(t, err)
-
-	defer snooper.Shutdown()
-
-	reqBody := bytes.NewBufferString(`{"jsonrpc":"2.0","method":"test","params":[],"id":1}`)
-	req := httptest.NewRequest(http.MethodPost, "/", reqBody)
-	req.Header.Set("Content-Type", "application/json")
-
-	rec := httptest.NewRecorder()
-
-	snooper.ServeHTTP(rec, req)
-
-	timeMu.Lock()
-	responseTime = time.Now()
-	timeMu.Unlock()
-
-	clientReceivedResponse.Store(true)
-
-	// Verify response
-	assert.Equal(t, http.StatusOK, rec.Code)
-	assert.Equal(t, responseBody, rec.Body.Bytes())
-	assert.True(t, clientReceivedResponse.Load())
-
-	t.Logf("Response received at %v", responseTime)
+	assert.Zero(t, errCount, "All concurrent requests should succeed with correct response")
 }
