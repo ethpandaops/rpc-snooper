@@ -15,81 +15,102 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// slowReader wraps a reader and adds artificial delay to each read operation.
-// This is used to simulate slow request body transmission.
-type slowReader struct {
-	reader   io.Reader
-	delay    time.Duration
-	readOnce sync.Once
-}
-
-func (s *slowReader) Read(p []byte) (n int, err error) {
-	s.readOnce.Do(func() {
-		time.Sleep(s.delay)
-	})
-
-	return s.reader.Read(p)
-}
-
-// TestClientResponseNotBlockedBySlowRequestBody verifies that a slow request body
+// TestClientResponseNotBlockedBySlowLogging verifies that slow request logging
 // does not block the response from reaching the client.
-func TestClientResponseNotBlockedBySlowRequestBody(t *testing.T) {
+func TestClientResponseNotBlockedBySlowLogging(t *testing.T) {
 	responseBody := []byte(`{"jsonrpc":"2.0","id":1,"result":"test"}`)
-	requestDelay := 100 * time.Millisecond
+	loggingDelay := 200 * time.Millisecond
 
-	var upstreamReceivedRequest time.Time
+	var requestLogTime time.Time
 
-	var upstreamSentResponse time.Time
+	var responseLogTime time.Time
+
+	var logMu sync.Mutex
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		upstreamReceivedRequest = time.Now()
-
-		// Read request body (this will be slow due to slowReader)
 		_, _ = io.ReadAll(r.Body)
 
-		// Send response immediately after reading request
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(responseBody)
-
-		upstreamSentResponse = time.Now()
 	}))
 	defer upstream.Close()
 
+	// Create a logger that delays on request logging
 	logger := logrus.New()
-	logger.SetLevel(logrus.ErrorLevel)
+	logger.SetLevel(logrus.InfoLevel)
+	logger.SetOutput(&slowLogWriter{
+		delay: loggingDelay,
+		onWrite: func(isRequest bool) {
+			logMu.Lock()
+			defer logMu.Unlock()
+
+			if isRequest {
+				requestLogTime = time.Now()
+			} else {
+				responseLogTime = time.Now()
+			}
+		},
+	})
 
 	snooper, err := NewSnooper(upstream.URL, logger, nil, "")
 	require.NoError(t, err)
 
 	defer snooper.Shutdown()
 
-	// Create a slow request body - this delays request logging completion
 	requestData := []byte(`{"jsonrpc":"2.0","method":"test","params":[],"id":1}`)
-	slowReqBody := &slowReader{
-		reader: bytes.NewReader(requestData),
-		delay:  requestDelay,
-	}
-
-	req := httptest.NewRequest(http.MethodPost, "/", slowReqBody)
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(requestData))
 	req.Header.Set("Content-Type", "application/json")
-	req.ContentLength = int64(len(requestData))
 
 	rec := httptest.NewRecorder()
 	start := time.Now()
 
 	snooper.ServeHTTP(rec, req)
 
-	clientReceivedResponse := time.Since(start)
+	clientReceivedAt := time.Since(start)
 
-	// Verify the response was correct
+	// Verify response is correct
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Equal(t, responseBody, rec.Body.Bytes())
 
-	t.Logf("Request delay: %v", requestDelay)
-	t.Logf("Upstream received request at: %v", upstreamReceivedRequest.Sub(start))
-	t.Logf("Upstream sent response at: %v", upstreamSentResponse.Sub(start))
-	t.Logf("Client received response in: %v", clientReceivedResponse)
+	// Wait for async logging to complete
+	time.Sleep(loggingDelay + 100*time.Millisecond)
+
+	logMu.Lock()
+	requestLogDuration := requestLogTime.Sub(start)
+	responseLogDuration := responseLogTime.Sub(start)
+	logMu.Unlock()
+
+	t.Logf("Logging delay: %v", loggingDelay)
+	t.Logf("Client received response in: %v", clientReceivedAt)
+	t.Logf("Request logged at: %v", requestLogDuration)
+	t.Logf("Response logged at: %v", responseLogDuration)
+
+	// The client should receive the response much faster than the logging delay.
+	// If blocking, client would wait for request logging (200ms+) before getting response.
+	assert.Less(t, clientReceivedAt, loggingDelay,
+		"Client should receive response before request logging completes (got %v, logging takes %v)",
+		clientReceivedAt, loggingDelay)
+}
+
+// slowLogWriter is an io.Writer that introduces delay when writing request logs.
+type slowLogWriter struct {
+	delay   time.Duration
+	onWrite func(isRequest bool)
+}
+
+func (w *slowLogWriter) Write(p []byte) (n int, err error) {
+	isRequest := bytes.Contains(p, []byte("REQUEST"))
+
+	if isRequest {
+		time.Sleep(w.delay)
+	}
+
+	if w.onWrite != nil {
+		w.onWrite(isRequest)
+	}
+
+	return len(p), nil
 }
 
 // TestLogOrderingPreserved verifies that request logs appear before response logs.
