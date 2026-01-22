@@ -5,7 +5,7 @@ go 1.25.1
 require (
 	github.com/andybalholm/brotli v1.2.0
 	github.com/creasty/defaults v1.8.0
-	github.com/ethpandaops/xatu v1.8.0
+	github.com/ethpandaops/xatu v1.8.1
 	github.com/fatih/color v1.18.0
 	github.com/golang-jwt/jwt/v5 v5.3.0
 	github.com/google/uuid v1.6.0
