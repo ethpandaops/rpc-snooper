@@ -113,7 +113,7 @@ func (h *EngineGetBlobsHandler) buildDecoratedEvent(
 	pending *PendingGetBlobsCall,
 	resp *ResponseEvent,
 ) *xatuProto.DecoratedEvent {
-	returnedCount, status, errorMsg := extractGetBlobsResponseData(resp)
+	returnedCount, returnedIndexes, status, errorMsg := extractGetBlobsResponseData(resp)
 
 	durationMs := max(resp.Duration.Milliseconds(), 0)
 
@@ -121,15 +121,16 @@ func (h *EngineGetBlobsHandler) buildDecoratedEvent(
 	requestedCount := uint32(len(pending.VersionedHashes))
 
 	data := &xatuProto.ExecutionEngineGetBlobs{
-		Source:          xatuProto.EngineSource_ENGINE_SOURCE_SNOOPER,
-		RequestedAt:     timestamppb.New(pending.RequestTimestamp),
-		DurationMs:      wrapperspb.UInt64(uint64(durationMs)), //nolint:gosec // duration is non-negative after check
-		RequestedCount:  wrapperspb.UInt32(requestedCount),
-		VersionedHashes: pending.VersionedHashes,
-		ReturnedCount:   wrapperspb.UInt32(returnedCount),
-		Status:          status,
-		ErrorMessage:    errorMsg,
-		MethodVersion:   pending.MethodVersion,
+		Source:              xatuProto.EngineSource_ENGINE_SOURCE_SNOOPER,
+		RequestedAt:         timestamppb.New(pending.RequestTimestamp),
+		DurationMs:          wrapperspb.UInt64(uint64(durationMs)), //nolint:gosec // duration is non-negative after check
+		RequestedCount:      wrapperspb.UInt32(requestedCount),
+		VersionedHashes:     pending.VersionedHashes,
+		ReturnedCount:       wrapperspb.UInt32(returnedCount),
+		ReturnedBlobIndexes: returnedIndexes,
+		Status:              status,
+		ErrorMessage:        errorMsg,
+		MethodVersion:       pending.MethodVersion,
 	}
 
 	return &xatuProto.DecoratedEvent{
@@ -180,30 +181,42 @@ func extractMethodVersion(method string) string {
 	return ""
 }
 
-// extractGetBlobsResponseData extracts the returned count, status, and error message from the response.
-func extractGetBlobsResponseData(resp *ResponseEvent) (returnedCount uint32, status, errorMsg string) {
+// extractGetBlobsResponseData extracts the returned count, indexes, status, and error message
+// from the response.
+func extractGetBlobsResponseData(resp *ResponseEvent) (
+	returnedCount uint32,
+	returnedIndexes []*wrapperspb.UInt32Value,
+	status, errorMsg string,
+) {
+	// Always initialize to empty slice (not nil)
+	returnedIndexes = make([]*wrapperspb.UInt32Value, 0)
+
 	// Handle error response
 	if resp.Error != nil {
-		return 0, "ERROR", resp.Error.Message
+		return 0, returnedIndexes, "ERROR", resp.Error.Message
 	}
 
-	// Handle null result (unsupported)
+	// Handle null result (unsupported/syncing)
 	if resp.Result == nil {
-		return 0, "UNSUPPORTED", ""
+		return 0, returnedIndexes, "UNSUPPORTED", ""
 	}
 
 	// Handle array result
 	resultList, ok := resp.Result.([]any)
 	if !ok {
-		return 0, "UNSUPPORTED", ""
+		return 0, returnedIndexes, "UNSUPPORTED", ""
 	}
 
-	// Count non-null blobs
+	// Count non-null blobs and collect their indexes
 	var nonNullCount uint32
 
-	for _, blob := range resultList {
+	returnedIndexes = make([]*wrapperspb.UInt32Value, 0, len(resultList))
+
+	for i, blob := range resultList {
 		if blob != nil {
 			nonNullCount++
+			//nolint:gosec // Safe: i is bounded by slice length which cannot exceed uint32 in practice
+			returnedIndexes = append(returnedIndexes, wrapperspb.UInt32(uint32(i)))
 		}
 	}
 
@@ -219,5 +232,5 @@ func extractGetBlobsResponseData(resp *ResponseEvent) (returnedCount uint32, sta
 		status = "SUCCESS"
 	}
 
-	return nonNullCount, status, ""
+	return nonNullCount, returnedIndexes, status, ""
 }
