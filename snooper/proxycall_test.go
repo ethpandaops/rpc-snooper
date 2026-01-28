@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ethpandaops/rpc-snooper/types"
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -359,4 +360,108 @@ func TestConcurrentRequests(t *testing.T) {
 	}
 
 	assert.Zero(t, errCount, "All concurrent requests should succeed with correct response")
+}
+
+// durationCapturingModule is a test module that captures ResponseContext.Duration.
+type durationCapturingModule struct {
+	id         uint64
+	onResponse func(ctx *types.ResponseContext)
+}
+
+func (m *durationCapturingModule) ID() uint64 { return m.id }
+
+func (m *durationCapturingModule) OnRequest(ctx *types.RequestContext) (*types.RequestContext, error) {
+	return ctx, nil
+}
+
+func (m *durationCapturingModule) OnResponse(ctx *types.ResponseContext) (*types.ResponseContext, error) {
+	if m.onResponse != nil {
+		m.onResponse(ctx)
+	}
+
+	return ctx, nil
+}
+
+func (m *durationCapturingModule) Configure(_ map[string]any) error { return nil }
+func (m *durationCapturingModule) Close() error                     { return nil }
+
+// TestCallDurationIncludesResponseBodyTransfer verifies that callDuration measures
+// the full round-trip including response body transfer, not just time to headers.
+// The upstream sends headers immediately then delays the body by a known amount.
+// If duration only measured to headers, it would be ~0ms. With the fix, it
+// includes the body transfer delay.
+func TestCallDurationIncludesResponseBodyTransfer(t *testing.T) {
+	bodyDelay := 200 * time.Millisecond
+	responseBody := bytes.Repeat([]byte("x"), 64*1024) // 64KB
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body)
+
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.WriteHeader(http.StatusOK)
+
+		// Flush headers so client.Do() returns immediately
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+
+		// Delay body transfer — this is the time duration_ms must capture
+		time.Sleep(bodyDelay)
+
+		_, _ = w.Write(responseBody)
+	}))
+	defer upstream.Close()
+
+	var capturedDuration time.Duration
+
+	var durationMu sync.Mutex
+
+	logger := logrus.New()
+	logger.SetLevel(logrus.ErrorLevel)
+
+	snooper, err := NewSnooper(upstream.URL, logger, nil, "")
+	require.NoError(t, err)
+
+	defer snooper.Shutdown()
+
+	// Register a test module to capture ResponseContext.Duration
+	moduleID := snooper.moduleManager.GenerateModuleID()
+	testModule := &durationCapturingModule{
+		id: moduleID,
+		onResponse: func(ctx *types.ResponseContext) {
+			durationMu.Lock()
+			capturedDuration = ctx.Duration
+			durationMu.Unlock()
+		},
+	}
+
+	err = snooper.moduleManager.RegisterModule(testModule, nil)
+	require.NoError(t, err)
+
+	reqBody := bytes.NewBufferString(`{"jsonrpc":"2.0","method":"test","params":[],"id":1}`)
+	req := httptest.NewRequest(http.MethodPost, "/", reqBody)
+	req.Header.Set("Content-Type", "application/json")
+
+	rec := httptest.NewRecorder()
+
+	snooper.ServeHTTP(rec, req)
+
+	// Verify response is correct and complete
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, len(responseBody), rec.Body.Len(), "Full response body should be received")
+
+	// Wait for async logging goroutine to complete
+	time.Sleep(200 * time.Millisecond)
+
+	durationMu.Lock()
+	d := capturedDuration
+	durationMu.Unlock()
+
+	// Duration must include the body transfer delay.
+	// Under the old code (measuring at client.Do return), this would be ~0ms
+	// because headers arrive before the body delay.
+	assert.GreaterOrEqual(t, d, bodyDelay,
+		"Duration should include response body transfer time, got %v (expected >= %v)", d, bodyDelay)
+
+	t.Logf("Captured duration: %v (body delay was %v)", d, bodyDelay)
 }
