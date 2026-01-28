@@ -22,6 +22,7 @@ type ProxyCallContext struct {
 	reqSentChan  chan struct{}
 	streamReader io.ReadCloser
 	data         map[string]interface{}
+	callDuration time.Duration
 }
 
 func (s *Snooper) newProxyCallContext(parent context.Context, timeout time.Duration) *ProxyCallContext {
@@ -81,6 +82,12 @@ func (callContext *ProxyCallContext) SetData(moduleID uint64, key string, value 
 
 func (callContext *ProxyCallContext) GetData(moduleID uint64, key string) interface{} {
 	return callContext.data[fmt.Sprintf("%d:%s", moduleID, key)]
+}
+
+// CallDuration returns the full round-trip duration of the proxied call,
+// including response body transfer.
+func (callContext *ProxyCallContext) CallDuration() time.Duration {
+	return callContext.callDuration
 }
 
 func (s *Snooper) processProxyCall(w http.ResponseWriter, r *http.Request) error {
@@ -171,8 +178,6 @@ func (s *Snooper) processProxyCall(w http.ResponseWriter, r *http.Request) error
 		return fmt.Errorf("proxy request error: %w", err)
 	}
 
-	callDuration := time.Since(callStart)
-
 	if callContext.cancelled {
 		resp.Body.Close()
 		return fmt.Errorf("proxy context cancelled")
@@ -222,10 +227,16 @@ func (s *Snooper) processProxyCall(w http.ResponseWriter, r *http.Request) error
 		w.WriteHeader(resp.StatusCode)
 
 		// Create response body reader with module processing and logging
-		responseBodyReader := s.createResponseProcessingStream(callContext, r, resp, callDuration)
+		responseBodyReader := s.createResponseProcessingStream(callContext, r, resp)
 		defer responseBodyReader.Close()
 
 		_, err = io.Copy(w, responseBodyReader)
+
+		// Measure full round-trip duration including response body transfer.
+		// Must be set before deferred Close() fires, which spawns the logging
+		// goroutine that reads this value.
+		callContext.callDuration = time.Since(callStart)
+
 		if err != nil {
 			return fmt.Errorf("proxy response stream error: %w", err)
 		}
@@ -293,7 +304,9 @@ func (s *Snooper) createRequestProcessingStream(callCtx *ProxyCallContext, r *ht
 // Uses bytes.Buffer internally so writes never block the client.
 // Pre-allocates buffer using Content-Length when available for ~2x throughput on large responses.
 // Waits for request logging to complete before processing (to preserve log order).
-func (s *Snooper) createResponseProcessingStream(callCtx *ProxyCallContext, r *http.Request, resp *http.Response, callDuration time.Duration) io.ReadCloser {
+// Duration is read from callCtx.CallDuration(), which must be set before the returned
+// reader is closed (deferred Close triggers the logging goroutine).
+func (s *Snooper) createResponseProcessingStream(callCtx *ProxyCallContext, r *http.Request, resp *http.Response) io.ReadCloser {
 	// Create tee stream for logging (buffer-based, never blocks)
 	// Use Content-Length as size hint to pre-allocate buffer and avoid reallocations
 	loggedStream := s.createTeeLogStreamWithSizeHint(resp.Body, resp.ContentLength, func(reader io.ReadCloser) {
@@ -301,7 +314,7 @@ func (s *Snooper) createResponseProcessingStream(callCtx *ProxyCallContext, r *h
 		<-callCtx.reqSentChan
 
 		// Log response (reader backed by buffer, instant read)
-		s.logResponse(callCtx, r, resp, reader, callDuration)
+		s.logResponse(callCtx, r, resp, reader)
 	})
 
 	return loggedStream
