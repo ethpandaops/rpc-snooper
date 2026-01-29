@@ -194,7 +194,7 @@ func (s *Snooper) logRequest(ctx *ProxyCallContext, req *http.Request, body io.R
 	s.logger.WithFields(logFields).Infof("REQUEST #%v: %v %v", ctx.callIndex, req.Method, req.URL.String())
 }
 
-func (s *Snooper) logResponse(ctx *ProxyCallContext, req *http.Request, rsp *http.Response, body io.ReadCloser, callDuration time.Duration) {
+func (s *Snooper) logResponse(ctx *ProxyCallContext, req *http.Request, rsp *http.Response, body io.ReadCloser) {
 	// Generate sequence number for this response processing
 	seq := s.orderedProcessor.GetNextSequence()
 
@@ -264,7 +264,7 @@ func (s *Snooper) logResponse(ctx *ProxyCallContext, req *http.Request, rsp *htt
 	}
 
 	// Process modules in order
-	s.processResponseModules(ctx, req, rsp, bodyData, parsedData, contentType, callDuration)
+	s.processResponseModules(ctx, req, rsp, bodyData, parsedData, contentType)
 
 	s.logger.WithFields(logFields).Infof("RESPONSE #%v: %v %v", ctx.callIndex, req.Method, req.URL.String())
 }
@@ -367,7 +367,7 @@ func (s *Snooper) processRequestModules(ctx *ProxyCallContext, req *http.Request
 }
 
 // processResponseModules processes response data through modules using already parsed/decoded data
-func (s *Snooper) processResponseModules(ctx *ProxyCallContext, req *http.Request, rsp *http.Response, bodyData []byte, parsedData interface{}, contentType string, callDuration time.Duration) {
+func (s *Snooper) processResponseModules(ctx *ProxyCallContext, req *http.Request, rsp *http.Response, bodyData []byte, parsedData interface{}, contentType string) {
 	if s.moduleManager == nil || !s.moduleManager.IsEnabled() {
 		return
 	}
@@ -389,7 +389,7 @@ func (s *Snooper) processResponseModules(ctx *ProxyCallContext, req *http.Reques
 		BodyBytes:   bodyData,
 		ContentType: contentType,
 		Timestamp:   time.Now(),
-		Duration:    callDuration,
+		Duration:    ctx.CallDuration(),
 	}
 
 	// Process through modules (non-modifying, observation only)
