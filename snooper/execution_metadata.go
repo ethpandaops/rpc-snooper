@@ -3,11 +3,14 @@ package snooper
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -51,7 +54,7 @@ type ExecutionMetadataFetcher struct {
 
 // NewExecutionMetadataFetcher creates a new ExecutionMetadataFetcher.
 func NewExecutionMetadataFetcher(targetURL *url.URL, jwtSecret string, log logrus.FieldLogger) *ExecutionMetadataFetcher {
-	secret := ParseJWTSecret(jwtSecret, log)
+	secret := parseJWTSecret(jwtSecret, log)
 
 	return &ExecutionMetadataFetcher{
 		targetURL: targetURL,
@@ -63,6 +66,44 @@ func NewExecutionMetadataFetcher(targetURL *url.URL, jwtSecret string, log logru
 		ready: make(chan struct{}),
 		done:  make(chan struct{}),
 	}
+}
+
+// parseJWTSecret parses a JWT secret from either a file path or hex-encoded string.
+// If the value looks like a file path, it reads the secret from the file.
+// Otherwise, it treats it as a hex-encoded value (with optional "0x" prefix).
+func parseJWTSecret(s string, log logrus.FieldLogger) []byte {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+
+	// Check if it looks like a file path
+	if strings.HasPrefix(s, "/") || strings.HasPrefix(s, "./") || strings.HasPrefix(s, "../") {
+		data, err := os.ReadFile(s)
+		if err != nil {
+			log.WithError(err).WithField("path", s).Error("failed to read JWT secret from file")
+
+			return nil
+		}
+
+		// File contents should be hex-encoded
+		return parseHexSecret(strings.TrimSpace(string(data)))
+	}
+
+	return parseHexSecret(s)
+}
+
+// parseHexSecret parses a hex-encoded secret string.
+func parseHexSecret(s string) []byte {
+	s = strings.TrimSpace(s)
+	s = strings.TrimPrefix(s, "0x")
+
+	secret, err := hex.DecodeString(s)
+	if err != nil {
+		return nil
+	}
+
+	return secret
 }
 
 // createJWTToken creates a JWT token for Engine API authentication.
