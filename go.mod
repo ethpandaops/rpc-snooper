@@ -5,6 +5,7 @@ go 1.25.1
 require (
 	github.com/andybalholm/brotli v1.2.0
 	github.com/creasty/defaults v1.8.0
+	github.com/ethpandaops/ethcore v0.0.0-20260112064422-e7fe02956738
 	github.com/ethpandaops/xatu v1.8.1
 	github.com/fatih/color v1.18.0
 	github.com/golang-jwt/jwt/v5 v5.3.0
@@ -65,7 +66,6 @@ require (
 	github.com/prometheus/procfs v0.17.0 // indirect
 	github.com/prysmaticlabs/go-bitfield v0.0.0-20240618144021-706c95b2dd15 // indirect
 	github.com/rcrowley/go-metrics v0.0.0-20250401214520-65e299d6c5c9 // indirect
-	github.com/rogpeppe/go-internal v1.14.1 // indirect
 	go.opentelemetry.io/auto/sdk v1.1.0 // indirect
 	go.opentelemetry.io/otel v1.37.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.37.0 // indirect

@@ -1,6 +1,9 @@
 package xatu
 
 import (
+	"fmt"
+	"strings"
+
 	xatu "github.com/ethpandaops/xatu/pkg/proto/xatu"
 )
 
@@ -35,4 +38,20 @@ type ClientVersionV1 struct {
 	Name    string `json:"name"`    // Human-readable name (e.g., "Geth")
 	Version string `json:"version"` // Version string (e.g., "v1.14.0")
 	Commit  string `json:"commit"`  // 4-byte commit hash
+}
+
+// String returns a web3_clientVersion-style string for compatibility with parsers.
+// The format is Name/Version, where Version includes the commit hash if not already present.
+func (c ClientVersionV1) String() string {
+	version := c.Version
+
+	// Normalize commit by stripping 0x prefix for comparison
+	commitNorm := strings.TrimPrefix(c.Commit, "0x")
+
+	// If commit is not empty and not already embedded in version, append it
+	if commitNorm != "" && !strings.Contains(c.Version, commitNorm) {
+		version = fmt.Sprintf("%s-%s", c.Version, c.Commit)
+	}
+
+	return fmt.Sprintf("%s/%s", c.Name, version)
 }
