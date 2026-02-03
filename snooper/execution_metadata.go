@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ethpandaops/ethcore/pkg/ethereum/clients"
 	"github.com/ethpandaops/rpc-snooper/xatu"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/sirupsen/logrus"
@@ -321,79 +322,16 @@ func (f *ExecutionMetadataFetcher) fetch(ctx context.Context) error {
 
 // parseClientVersion converts a ClientVersionV1 to ExecutionMetadata.
 func (f *ExecutionMetadataFetcher) parseClientVersion(cv xatu.ClientVersionV1) *xatu.ExecutionMetadata {
-	// Parse version string (e.g., "v1.14.0" or "1.14.0")
-	version := cv.Version
-	versionMajor, versionMinor, versionPatch := parseVersion(version)
+	// Convert to web3_clientVersion-style string and parse with ethcore
+	impl, version, major, minor, patch := clients.ParseExecutionClientVersion(cv.String())
 
 	return &xatu.ExecutionMetadata{
-		Implementation: cv.Name,
+		Implementation: impl,
 		Version:        version,
-		VersionMajor:   versionMajor,
-		VersionMinor:   versionMinor,
-		VersionPatch:   versionPatch,
+		VersionMajor:   major,
+		VersionMinor:   minor,
+		VersionPatch:   patch,
 	}
-}
-
-// parseVersion parses a version string into major, minor, patch components.
-func parseVersion(version string) (major, minor, patch string) {
-	if version == "" {
-		return "", "", ""
-	}
-
-	// Remove 'v' prefix if present
-	if version[0] == 'v' {
-		version = version[1:]
-	}
-
-	// Split by '-' or '+' to get core version
-	coreVersion := version
-
-	for i, c := range version {
-		if c == '-' || c == '+' {
-			coreVersion = version[:i]
-
-			break
-		}
-	}
-
-	// Split by '.' to get major.minor.patch
-	parts := splitBy(coreVersion, '.')
-	if len(parts) > 0 {
-		major = parts[0]
-	}
-
-	if len(parts) > 1 {
-		minor = parts[1]
-	}
-
-	if len(parts) > 2 {
-		patch = parts[2]
-	}
-
-	return major, minor, patch
-}
-
-// splitBy splits a string by a delimiter.
-func splitBy(s string, delim rune) []string {
-	var parts []string
-
-	start := 0
-
-	for i, c := range s {
-		if c == delim {
-			if i > start {
-				parts = append(parts, s[start:i])
-			}
-
-			start = i + 1
-		}
-	}
-
-	if start < len(s) {
-		parts = append(parts, s[start:])
-	}
-
-	return parts
 }
 
 // refreshLoop periodically refreshes execution metadata.
