@@ -40,18 +40,28 @@ type ClientVersionV1 struct {
 	Commit  string `json:"commit"`  // 4-byte commit hash
 }
 
-// String returns a web3_clientVersion-style string for compatibility with parsers.
-// The format is Name/Version, where Version includes the commit hash if not already present.
+// String returns a web3_clientVersion-style string (Name/Version).
 func (c ClientVersionV1) String() string {
 	version := c.Version
-
-	// Normalize commit by stripping 0x prefix for comparison
 	commitNorm := strings.TrimPrefix(c.Commit, "0x")
 
-	// If commit is not empty and not already embedded in version, append it
-	if commitNorm != "" && !strings.Contains(c.Version, commitNorm) {
+	if commitNorm != "" && !commitContainedInVersion(c.Version, commitNorm) {
 		version = fmt.Sprintf("%s-%s", c.Version, c.Commit)
 	}
 
 	return fmt.Sprintf("%s/%s", c.Name, version)
+}
+
+// commitContainedInVersion checks if the commit (or a prefix) is already in the version.
+func commitContainedInVersion(version, commit string) bool {
+	if strings.Contains(version, commit) {
+		return true
+	}
+
+	const minPrefixLen = 6
+	if len(commit) >= minPrefixLen && strings.Contains(version, commit[:minPrefixLen]) {
+		return true
+	}
+
+	return false
 }
