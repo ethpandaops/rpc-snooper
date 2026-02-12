@@ -8,11 +8,11 @@ GOLDFLAGS += -X 'github.com/ethpandaops/rpc-snooper/utils.BuildRelease="$(RELEAS
 all: build
 
 test:
-	go test ./...
+	GOEXPERIMENT=jsonv2 go test ./...
 
 build:
 	@echo version: $(VERSION)
-	env CGO_ENABLED=1 go build -v -o bin/ -ldflags="-s -w $(GOLDFLAGS)" ./cmd/*
+	env CGO_ENABLED=1 GOEXPERIMENT=jsonv2 go build -v -o bin/ -ldflags="-s -w $(GOLDFLAGS)" ./cmd/*
 
 clean:
 	rm -f bin/*
