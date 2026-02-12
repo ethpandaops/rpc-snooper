@@ -1,5 +1,5 @@
 # build env
-FROM golang:1.25.1 AS build-env
+FROM golang:1.26 AS build-env
 COPY go.mod go.sum /src/
 WORKDIR /src
 RUN go mod download
@@ -10,7 +10,7 @@ ARG release=
 RUN <<EOR
   VERSION=$(git rev-parse --short HEAD)
   RELEASE=$release
-  CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o /app/snooper -ldflags="-s -w -X 'github.com/ethpandaops/rpc-snooper/utils.BuildVersion=${VERSION}' -X 'github.com/ethpandaops/rpc-snooper/utils.BuildRelease=${RELEASE}'" ./cmd/snooper
+  CGO_ENABLED=0 GOEXPERIMENT=jsonv2 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o /app/snooper -ldflags="-s -w -X 'github.com/ethpandaops/rpc-snooper/utils.BuildVersion=${VERSION}' -X 'github.com/ethpandaops/rpc-snooper/utils.BuildRelease=${RELEASE}'" ./cmd/snooper
 EOR
 
 # final stage
