@@ -22,6 +22,7 @@ type CliArgs struct {
 	bind        string
 	port        int
 	nocolor     bool
+	notruncate  bool
 	noapi       bool
 	apiPort     int
 	apiBind     string
@@ -175,6 +176,7 @@ func main() {
 		bind:        getEnvString("SNOOPER_BIND_ADDRESS", "127.0.0.1"),
 		port:        getEnvInt("SNOOPER_PORT", 3000),
 		nocolor:     getEnvBool("SNOOPER_NO_COLOR", false),
+		notruncate:  getEnvBool("SNOOPER_NO_TRUNCATE", false),
 		noapi:       getEnvBool("SNOOPER_NO_API", false),
 		apiPort:     getEnvInt("SNOOPER_API_PORT", 0),
 		apiBind:     getEnvString("SNOOPER_API_BIND", "0.0.0.0"),
@@ -209,6 +211,7 @@ func main() {
 	flags.StringVarP(&cliArgs.bind, "bind-address", "b", cliArgs.bind, "Address to bind to and listen for incoming requests (env: SNOOPER_BIND_ADDRESS)")
 	flags.IntVarP(&cliArgs.port, "port", "p", cliArgs.port, "Port to listen for incoming requests (env: SNOOPER_PORT)")
 	flags.BoolVar(&cliArgs.nocolor, "no-color", cliArgs.nocolor, "Do not use terminal colors in output (env: SNOOPER_NO_COLOR)")
+	flags.BoolVar(&cliArgs.notruncate, "no-truncate", cliArgs.notruncate, "Do not truncate large hex values in log output (env: SNOOPER_NO_TRUNCATE)")
 	flags.BoolVar(&cliArgs.noapi, "no-api", cliArgs.noapi, "Do not provide management REST api (env: SNOOPER_NO_API)")
 	flags.IntVar(&cliArgs.apiPort, "api-port", cliArgs.apiPort, "Optional separate port for the snooper API endpoints (env: SNOOPER_API_PORT)")
 	flags.StringVar(&cliArgs.apiBind, "api-bind", cliArgs.apiBind, "Optional address to bind to for the snooper API endpoints (env: SNOOPER_API_BIND)")
@@ -293,6 +296,10 @@ func main() {
 		logger.Errorf("Failed initializing server: %v", err)
 
 		return
+	}
+
+	if cliArgs.notruncate {
+		rpcSnooper.DisableLogTruncation()
 	}
 
 	// Start separate API server if api-port is specified

@@ -40,6 +40,9 @@ type Snooper struct {
 
 	orderedProcessor *OrderedProcessor
 
+	// Log truncation
+	logTruncationEnabled bool
+
 	// Flow control
 	flowEnabled bool
 	flowBlocked map[string]bool
@@ -66,13 +69,14 @@ func NewSnooper(target string, logger logrus.FieldLogger, xatuConfig *xatu.Confi
 	snooper := &Snooper{
 		CallTimeout: 60 * time.Second,
 
-		target:        targetURL,
-		logger:        logger,
-		moduleManager: modules.NewManager(logger),
-		flowEnabled:   true, // Start with flow enabled by default
-		flowBlocked:   make(map[string]bool),
-		xatuService:   xatuService,
-		jwtSecret:     jwtSecret,
+		target:               targetURL,
+		logger:               logger,
+		moduleManager:        modules.NewManager(logger),
+		logTruncationEnabled: true,
+		flowEnabled:          true, // Start with flow enabled by default
+		flowBlocked:          make(map[string]bool),
+		xatuService:          xatuService,
+		jwtSecret:            jwtSecret,
 	}
 
 	// Set up metadata fetcher if xatu is enabled
@@ -98,6 +102,12 @@ func NewSnooper(target string, logger logrus.FieldLogger, xatuConfig *xatu.Confi
 	snooper.orderedProcessor = NewOrderedProcessor(snooper)
 
 	return snooper, nil
+}
+
+// DisableLogTruncation disables hex truncation in log output.
+// Call this once at startup before serving requests.
+func (s *Snooper) DisableLogTruncation() {
+	s.logTruncationEnabled = false
 }
 
 func (s *Snooper) Shutdown() {
