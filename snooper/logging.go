@@ -37,6 +37,31 @@ func (s *Snooper) beautifyJSON(body []byte) []byte {
 	return res
 }
 
+// beautifyJSONForLog beautifies JSON for log output, optionally
+// truncating large hex values. Module processing and proxy behavior
+// are completely unaffected — only console log display is changed.
+func (s *Snooper) beautifyJSONForLog(body []byte) []byte {
+	if !s.logTruncationEnabled {
+		return s.beautifyJSON(body)
+	}
+
+	var obj any
+
+	err := json.Unmarshal(body, &obj)
+	if err != nil {
+		return s.beautifyJSON(body)
+	}
+
+	obj = truncateHexInTree(obj)
+
+	res, err := json.MarshalIndent(obj, "", "  ")
+	if err != nil {
+		return s.beautifyJSON(body)
+	}
+
+	return res
+}
+
 type logReadCloser struct {
 	reader   io.Reader
 	buf      *bytes.Buffer
@@ -154,11 +179,17 @@ func (s *Snooper) logRequest(ctx *ProxyCallContext, req *http.Request, body io.R
 		body = utils.NewHexEncoder(body)
 		bodyData, _ = io.ReadAll(body)
 		logFields["type"] = "ssz"
-		logFields["body"] = fmt.Sprintf("%v\n\n", string(bodyData))
+
+		if s.logTruncationEnabled {
+			logFields["body"] = fmt.Sprintf("%v\n\n",
+				truncateHexValue(string(bodyData)))
+		} else {
+			logFields["body"] = fmt.Sprintf("%v\n\n", string(bodyData))
+		}
 	default:
 		bodyData, _ = io.ReadAll(body)
 
-		if beautifiedJSON := s.beautifyJSON(bodyData); len(beautifiedJSON) > 0 {
+		if beautifiedJSON := s.beautifyJSONForLog(bodyData); len(beautifiedJSON) > 0 {
 			logFields["type"] = "json"
 			logFields["body"] = fmt.Sprintf("%v\n\n", string(beautifiedJSON))
 
@@ -242,10 +273,16 @@ func (s *Snooper) logResponse(ctx *ProxyCallContext, req *http.Request, rsp *htt
 		body = utils.NewHexEncoder(body)
 		bodyData, _ = io.ReadAll(body)
 		logFields["type"] = "ssz"
-		logFields["body"] = fmt.Sprintf("%v\n\n", string(bodyData))
+
+		if s.logTruncationEnabled {
+			logFields["body"] = fmt.Sprintf("%v\n\n",
+				truncateHexValue(string(bodyData)))
+		} else {
+			logFields["body"] = fmt.Sprintf("%v\n\n", string(bodyData))
+		}
 	default:
 		bodyData, _ = io.ReadAll(body)
-		if beautifiedJSON := s.beautifyJSON(bodyData); len(beautifiedJSON) > 0 {
+		if beautifiedJSON := s.beautifyJSONForLog(bodyData); len(beautifiedJSON) > 0 {
 			logFields["type"] = "json"
 			logFields["body"] = fmt.Sprintf("%v\n\n", string(beautifiedJSON))
 			// Store parsed JSON for module processing
@@ -317,7 +354,7 @@ func (s *Snooper) logEventResponse(ctx *ProxyCallContext, req *http.Request, rsp
 		if err != nil {
 			s.logger.Warnf("failed parsing event data: %v", err)
 		} else {
-			logFields["body"] = fmt.Sprintf("%v\n\n", string(s.beautifyJSON(bodyJSON)))
+			logFields["body"] = fmt.Sprintf("%v\n\n", string(s.beautifyJSONForLog(bodyJSON)))
 			parsedEventData = evt
 		}
 	}
