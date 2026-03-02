@@ -72,7 +72,7 @@ func NewSnooper(target string, logger logrus.FieldLogger, xatuConfig *xatu.Confi
 		target:               targetURL,
 		logger:               logger,
 		moduleManager:        modules.NewManager(logger),
-		logTruncationEnabled: true,
+		logTruncationEnabled: false,
 		flowEnabled:          true, // Start with flow enabled by default
 		flowBlocked:          make(map[string]bool),
 		xatuService:          xatuService,
@@ -104,10 +104,10 @@ func NewSnooper(target string, logger logrus.FieldLogger, xatuConfig *xatu.Confi
 	return snooper, nil
 }
 
-// DisableLogTruncation disables hex truncation in log output.
+// EnableLogTruncation enables hex truncation in log output.
 // Call this once at startup before serving requests.
-func (s *Snooper) DisableLogTruncation() {
-	s.logTruncationEnabled = false
+func (s *Snooper) EnableLogTruncation() {
+	s.logTruncationEnabled = true
 }
 
 func (s *Snooper) Shutdown() {
