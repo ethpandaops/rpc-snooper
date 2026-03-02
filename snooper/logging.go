@@ -49,17 +49,34 @@ func (s *Snooper) beautifyJSONForLog(body []byte) []byte {
 
 	err := json.Unmarshal(body, &obj)
 	if err != nil {
-		return s.beautifyJSON(body)
+		// Unmarshal failed — beautifyJSON will also fail on the same
+		// input, so log the warning directly and return nil.
+		s.logger.Warnf("failed unmarshaling data: %v", err)
+
+		return nil
 	}
 
 	obj = truncateHexInTree(obj)
 
 	res, err := json.MarshalIndent(obj, "", "  ")
 	if err != nil {
+		// MarshalIndent failed after a successful unmarshal. Fall back
+		// to plain beautification (re-parse is cheap for valid JSON).
 		return s.beautifyJSON(body)
 	}
 
 	return res
+}
+
+// formatHexBodyForLog formats a hex-encoded body (e.g. SSZ) for log
+// output, optionally truncating large values when truncation is enabled.
+func (s *Snooper) formatHexBodyForLog(bodyData []byte) string {
+	str := string(bodyData)
+	if s.logTruncationEnabled {
+		str = truncateHexValue(str)
+	}
+
+	return fmt.Sprintf("%v\n\n", str)
 }
 
 type logReadCloser struct {
@@ -180,12 +197,7 @@ func (s *Snooper) logRequest(ctx *ProxyCallContext, req *http.Request, body io.R
 		bodyData, _ = io.ReadAll(body)
 		logFields["type"] = "ssz"
 
-		if s.logTruncationEnabled {
-			logFields["body"] = fmt.Sprintf("%v\n\n",
-				truncateHexValue(string(bodyData)))
-		} else {
-			logFields["body"] = fmt.Sprintf("%v\n\n", string(bodyData))
-		}
+		logFields["body"] = s.formatHexBodyForLog(bodyData)
 	default:
 		bodyData, _ = io.ReadAll(body)
 
@@ -274,12 +286,7 @@ func (s *Snooper) logResponse(ctx *ProxyCallContext, req *http.Request, rsp *htt
 		bodyData, _ = io.ReadAll(body)
 		logFields["type"] = "ssz"
 
-		if s.logTruncationEnabled {
-			logFields["body"] = fmt.Sprintf("%v\n\n",
-				truncateHexValue(string(bodyData)))
-		} else {
-			logFields["body"] = fmt.Sprintf("%v\n\n", string(bodyData))
-		}
+		logFields["body"] = s.formatHexBodyForLog(bodyData)
 	default:
 		bodyData, _ = io.ReadAll(body)
 		if beautifiedJSON := s.beautifyJSONForLog(bodyData); len(beautifiedJSON) > 0 {
