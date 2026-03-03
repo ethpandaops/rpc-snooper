@@ -176,7 +176,7 @@ func main() {
 		bind:        getEnvString("SNOOPER_BIND_ADDRESS", "127.0.0.1"),
 		port:        getEnvInt("SNOOPER_PORT", 3000),
 		nocolor:     getEnvBool("SNOOPER_NO_COLOR", false),
-		truncate:    getEnvBool("SNOOPER_TRUNCATE", false),
+		truncate:    getEnvBool("SNOOPER_TRUNCATE", true),
 		noapi:       getEnvBool("SNOOPER_NO_API", false),
 		apiPort:     getEnvInt("SNOOPER_API_PORT", 0),
 		apiBind:     getEnvString("SNOOPER_API_BIND", "0.0.0.0"),

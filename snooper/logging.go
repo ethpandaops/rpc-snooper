@@ -71,12 +71,12 @@ func (s *Snooper) beautifyJSONForLog(body []byte) []byte {
 // formatHexBodyForLog formats a hex-encoded body (e.g. SSZ) for log
 // output, optionally truncating large values when truncation is enabled.
 func (s *Snooper) formatHexBodyForLog(bodyData []byte) string {
-	str := string(bodyData)
+	str := fmt.Sprintf("0x%s", hex.EncodeToString(bodyData))
 	if s.logTruncationEnabled {
 		str = truncateHexValue(str)
 	}
 
-	return fmt.Sprintf("%v\n\n", str)
+	return str
 }
 
 type logReadCloser struct {
@@ -203,17 +203,13 @@ func (s *Snooper) logRequest(ctx *ProxyCallContext, req *http.Request, body io.R
 
 		if beautifiedJSON := s.beautifyJSONForLog(bodyData); len(beautifiedJSON) > 0 {
 			logFields["type"] = "json"
-			logFields["body"] = fmt.Sprintf("%v\n\n", string(beautifiedJSON))
+			logFields["body"] = string(beautifiedJSON)
 
 			// Store parsed JSON for module processing
 			_ = json.Unmarshal(bodyData, &parsedData)
 		} else {
 			logFields["type"] = "unknown"
-			bodyBuf := make([]byte, len(bodyData)*2)
-
-			hex.Encode(bodyBuf, bodyData)
-
-			logFields["body"] = bodyBuf
+			logFields["body"] = s.formatHexBodyForLog(bodyData)
 		}
 	}
 
@@ -291,14 +287,12 @@ func (s *Snooper) logResponse(ctx *ProxyCallContext, req *http.Request, rsp *htt
 		bodyData, _ = io.ReadAll(body)
 		if beautifiedJSON := s.beautifyJSONForLog(bodyData); len(beautifiedJSON) > 0 {
 			logFields["type"] = "json"
-			logFields["body"] = fmt.Sprintf("%v\n\n", string(beautifiedJSON))
+			logFields["body"] = string(beautifiedJSON)
 			// Store parsed JSON for module processing
 			_ = json.Unmarshal(bodyData, &parsedData)
 		} else {
 			logFields["type"] = "unknown"
-			bodyBuf := make([]byte, len(bodyData)*2)
-			hex.Encode(bodyBuf, bodyData)
-			logFields["body"] = bodyBuf
+			logFields["body"] = s.formatHexBodyForLog(bodyData)
 		}
 	}
 
@@ -361,7 +355,7 @@ func (s *Snooper) logEventResponse(ctx *ProxyCallContext, req *http.Request, rsp
 		if err != nil {
 			s.logger.Warnf("failed parsing event data: %v", err)
 		} else {
-			logFields["body"] = fmt.Sprintf("%v\n\n", string(s.beautifyJSONForLog(bodyJSON)))
+			logFields["body"] = string(s.beautifyJSONForLog(bodyJSON))
 			parsedEventData = evt
 		}
 	}
