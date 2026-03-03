@@ -50,10 +50,11 @@ func (f *SnooperFormatter) Format(entry *logrus.Entry) ([]byte, error) {
 		return nil, err
 	}
 
-	if isBytes {
+	if isBytes && len(body) > 0 {
 		coloredBody := colorPrint.Sprint(string(body))
 
 		lineBuf = append(lineBuf, coloredBody...)
+		lineBuf = append(lineBuf, []byte("\n\n")...)
 	}
 
 	return lineBuf, nil

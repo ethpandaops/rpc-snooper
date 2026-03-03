@@ -14,7 +14,7 @@ const (
 
 	// hexTruncatePreviewLen is the number of hex characters shown at
 	// each end of a truncated value (after the 0x prefix).
-	hexTruncatePreviewLen = 8
+	hexTruncatePreviewLen = 32
 )
 
 // truncateHexValue truncates a single hex string if it exceeds the
