@@ -51,12 +51,22 @@ func (h *EngineGetBlobsHandler) MethodMatcher() func(method string) bool {
 	}
 }
 
+func (h *EngineGetBlobsHandler) cleanupStale() {
+	cutoff := time.Now().Add(-30 * time.Second)
+	for id, pending := range h.pending {
+		if pending.RequestTimestamp.Before(cutoff) {
+			delete(h.pending, id)
+		}
+	}
+}
+
 // HandleRequest processes the request and stores pending data.
 func (h *EngineGetBlobsHandler) HandleRequest(event *RequestEvent) bool {
 	hashes := extractVersionedHashes(event.Params)
 	version := extractMethodVersion(event.Method)
 
 	h.mu.Lock()
+	h.cleanupStale()
 	h.pending[event.CallID] = &PendingGetBlobsCall{
 		CallID:           event.CallID,
 		RequestTimestamp: event.Timestamp,

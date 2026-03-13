@@ -67,11 +67,21 @@ func (h *EngineNewPayloadHandler) MethodMatcher() func(method string) bool {
 	}
 }
 
+func (h *EngineNewPayloadHandler) cleanupStale() {
+	cutoff := time.Now().Add(-30 * time.Second)
+	for id, pending := range h.pending {
+		if pending.RequestTimestamp.Before(cutoff) {
+			delete(h.pending, id)
+		}
+	}
+}
+
 // HandleRequest processes the request and stores pending data.
 func (h *EngineNewPayloadHandler) HandleRequest(event *RequestEvent) bool {
 	pending := h.extractPayloadData(event)
 
 	h.mu.Lock()
+	h.cleanupStale()
 	h.pending[event.CallID] = pending
 	h.mu.Unlock()
 
