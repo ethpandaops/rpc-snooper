@@ -18,12 +18,14 @@ import (
 // so 200 txs ≈ 300KB+ of JSON.
 func generateEnginePayload(txCount int) []byte {
 	txs := make([]string, txCount)
-	// realistic tx: 250 random-ish hex bytes = 500 hex chars
+
 	txHex := "0x02f8b20181"
 	for len(txHex) < 502 {
 		txHex += "deadbeef"
 	}
+
 	txHex = txHex[:502]
+
 	for i := range txs {
 		txs[i] = txHex
 	}
@@ -34,28 +36,29 @@ func generateEnginePayload(txCount int) []byte {
 		"id":      1,
 		"params": []interface{}{
 			map[string]interface{}{
-				"parentHash":           "0x0000000000000000000000000000000000000000000000000000000000000000",
-				"feeRecipient":         "0x0000000000000000000000000000000000000000",
-				"stateRoot":            "0x0000000000000000000000000000000000000000000000000000000000000000",
-				"receiptsRoot":         "0x0000000000000000000000000000000000000000000000000000000000000000",
-				"logsBloom":            "0x" + fmt.Sprintf("%0512x", 0),
-				"prevRandao":           "0x0000000000000000000000000000000000000000000000000000000000000000",
-				"blockNumber":          "0x1",
-				"gasLimit":             "0x1c9c380",
-				"gasUsed":              "0xe4e1c0",
-				"timestamp":            "0x60000000",
-				"extraData":            "0x",
-				"baseFeePerGas":        "0x7",
-				"blockHash":            "0x0000000000000000000000000000000000000000000000000000000000000001",
-				"transactions":         txs,
-				"slotNumber":           "0x1",
-				"blockAccessListHash":  "0x0000000000000000000000000000000000000000000000000000000000000000",
-				"blockAccessList":      []interface{}{},
+				"parentHash":          "0x0000000000000000000000000000000000000000000000000000000000000000",
+				"feeRecipient":        "0x0000000000000000000000000000000000000000",
+				"stateRoot":           "0x0000000000000000000000000000000000000000000000000000000000000000",
+				"receiptsRoot":        "0x0000000000000000000000000000000000000000000000000000000000000000",
+				"logsBloom":           "0x" + fmt.Sprintf("%0512x", 0),
+				"prevRandao":          "0x0000000000000000000000000000000000000000000000000000000000000000",
+				"blockNumber":         "0x1",
+				"gasLimit":            "0x1c9c380",
+				"gasUsed":             "0xe4e1c0",
+				"timestamp":           "0x60000000",
+				"extraData":           "0x",
+				"baseFeePerGas":       "0x7",
+				"blockHash":           "0x0000000000000000000000000000000000000000000000000000000000000001",
+				"transactions":        txs,
+				"slotNumber":          "0x1",
+				"blockAccessListHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+				"blockAccessList":     []interface{}{},
 			},
 		},
 	}
 
 	data, _ := json.Marshal(payload)
+
 	return data
 }
 
@@ -63,15 +66,16 @@ func generateEnginePayload(txCount int) []byte {
 // happen before the wait barrier. This is what ran during WaitForSequence.
 //
 // Old flow: ReadAll → beautifyJSON → Unmarshal → string format → WAIT → modules → log
-func simulateOldLogRequest(s *Snooper, bodyBytes []byte, barrier *sync.WaitGroup, done chan struct{}) {
-	// Simulate io.NopCloser(bytes.NewReader(data)) → ReadAll roundtrip
-	// that the old createTeeLogStreamWithSizeHint wrapping caused
+func simulateOldLogRequest(_ *Snooper, bodyBytes []byte, barrier *sync.WaitGroup, done chan struct{}) {
+	// Simulate NopCloser→ReadAll roundtrip from old createTeeLogStreamWithSizeHint
 	body := io.NopCloser(bytes.NewReader(bodyBytes))
 	bodyData, _ := io.ReadAll(body)
 
 	// beautifyJSON: unmarshal + marshal indent
 	var obj any
+
 	_ = json.Unmarshal(bodyData, &obj)
+
 	beautified, _ := json.MarshalIndent(obj, "", "  ")
 
 	// String formatting for logFields
@@ -79,6 +83,7 @@ func simulateOldLogRequest(s *Snooper, bodyBytes []byte, barrier *sync.WaitGroup
 
 	// Unmarshal again for parsedData (module processing)
 	var parsedData any
+
 	_ = json.Unmarshal(bodyData, &parsedData)
 
 	// request_size
@@ -109,11 +114,14 @@ func simulateNewLogRequest(bodyBytes []byte, barrier *sync.WaitGroup, done chan 
 
 	// After wait: all heavy work happens here (sequential, not concurrent)
 	var obj any
+
 	_ = json.Unmarshal(bodyData, &obj)
+
 	beautified, _ := json.MarshalIndent(obj, "", "  ")
 	_ = fmt.Sprintf("%v\n\n", string(beautified))
 
 	var parsedData any
+
 	_ = json.Unmarshal(bodyData, &parsedData)
 	_ = len(bodyData)
 
@@ -124,11 +132,11 @@ func simulateNewLogRequest(bodyBytes []byte, barrier *sync.WaitGroup, done chan 
 }
 
 // simulateOldLogRequestSSZ replicates the OLD SSZ path where body was
-// hex-encoded before being stored in bodyData.
+// hex-encoded via HexEncoder before being stored in bodyData.
 func simulateOldLogRequestSSZ(rawBytes []byte, barrier *sync.WaitGroup, done chan struct{}) {
-	// Old: body = utils.NewHexEncoder(body); bodyData, _ = io.ReadAll(body)
 	hexEncoded := make([]byte, len(rawBytes)*2)
 	hex.Encode(hexEncoded, rawBytes)
+
 	bodyData := hexEncoded
 
 	_ = fmt.Sprintf("%v\n\n", string(bodyData))
@@ -163,14 +171,18 @@ func measurePeakMemory(n int, workFn func(barrier *sync.WaitGroup, done chan str
 	// Force GC to get a clean baseline
 	runtime.GC()
 	runtime.GC()
+
 	var baseline runtime.MemStats
+
 	runtime.ReadMemStats(&baseline)
 
 	barrier := &sync.WaitGroup{}
 	barrier.Add(n)
+
 	done := make(chan struct{})
 
 	var wg sync.WaitGroup
+
 	wg.Add(n)
 
 	for range n {
@@ -185,7 +197,9 @@ func measurePeakMemory(n int, workFn func(barrier *sync.WaitGroup, done chan str
 
 	// Measure while all goroutines are blocked
 	runtime.GC()
+
 	var peak runtime.MemStats
+
 	runtime.ReadMemStats(&peak)
 
 	// Release goroutines
@@ -202,6 +216,7 @@ func measurePeakMemory(n int, workFn func(barrier *sync.WaitGroup, done chan str
 func TestMemoryDuringWait_JSON(t *testing.T) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.PanicLevel)
+
 	s := &Snooper{logger: logger}
 
 	configs := []struct {
@@ -231,8 +246,10 @@ func TestMemoryDuringWait_JSON(t *testing.T) {
 					simulateNewLogRequest(payload, barrier, done)
 				})
 
-				oldPerGoroutine := oldMem / uint64(n)
-				newPerGoroutine := newMem / uint64(n)
+				//nolint:gosec // Safe: n is a small positive test constant
+				un := uint64(n)
+				oldPerGoroutine := oldMem / un
+				newPerGoroutine := newMem / un
 				reduction := float64(oldMem-newMem) / float64(oldMem) * 100
 
 				t.Logf("payload=%dKB goroutines=%d", payloadSize/1024, n)
@@ -269,9 +286,12 @@ func TestMemoryDuringWait_SSZ(t *testing.T) {
 				simulateNewLogRequestSSZ(rawPayload, barrier, done)
 			})
 
+			//nolint:gosec // Safe: n is a small positive test constant
+			un := uint64(n)
+
 			t.Logf("goroutines=%d", n)
-			t.Logf("  OLD: %6dKB total, %5dKB/goroutine", oldMem/1024, oldMem/uint64(n)/1024)
-			t.Logf("  NEW: %6dKB total, %5dKB/goroutine", newMem/1024, newMem/uint64(n)/1024)
+			t.Logf("  OLD: %6dKB total, %5dKB/goroutine", oldMem/1024, oldMem/un/1024)
+			t.Logf("  NEW: %6dKB total, %5dKB/goroutine", newMem/1024, newMem/un/1024)
 
 			reduction := float64(oldMem-newMem) / float64(oldMem) * 100
 			t.Logf("  reduction=%.1f%%  saved=%dKB", reduction, (oldMem-newMem)/1024)
@@ -283,6 +303,7 @@ func TestMemoryDuringWait_SSZ(t *testing.T) {
 func BenchmarkLogRequestMemory_Old(b *testing.B) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.PanicLevel)
+
 	s := &Snooper{logger: logger}
 
 	payload := generateEnginePayload(200)
