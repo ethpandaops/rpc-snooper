@@ -53,23 +53,23 @@ func truncateHexValue(s string) string {
 
 // truncateHexInTree recursively walks a parsed JSON tree and replaces
 // any hex string values that exceed the threshold with a truncated
-// placeholder. The input is not modified; a new tree is returned.
+// placeholder. The input tree is mutated in place to avoid cloning.
+// Only call this on trees that the caller owns exclusively (e.g.
+// freshly unmarshalled from json.Unmarshal).
 func truncateHexInTree(v any) any {
 	switch val := v.(type) {
 	case map[string]any:
-		out := make(map[string]any, len(val))
 		for k, child := range val {
-			out[k] = truncateHexInTree(child)
+			val[k] = truncateHexInTree(child)
 		}
 
-		return out
+		return val
 	case []any:
-		out := make([]any, len(val))
 		for i, child := range val {
-			out[i] = truncateHexInTree(child)
+			val[i] = truncateHexInTree(child)
 		}
 
-		return out
+		return val
 	case string:
 		return truncateHexValue(val)
 	default:

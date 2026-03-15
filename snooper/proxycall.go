@@ -291,9 +291,8 @@ func (s *Snooper) processEventStreamResponse(callContext *ProxyCallContext, r *h
 
 // createRequestProcessingStream creates a streaming reader that processes request data through logging
 func (s *Snooper) createRequestProcessingStream(callCtx *ProxyCallContext, r *http.Request, stream io.ReadCloser) io.ReadCloser {
-	// Create tee stream for logging (module processing now happens in log stream)
-	loggedStream := s.createTeeLogStream(stream, func(reader io.ReadCloser) {
-		s.logRequest(callCtx, r, reader)
+	loggedStream := s.createTeeLogStream(stream, func(data []byte) {
+		s.logRequest(callCtx, r, data)
 		close(callCtx.reqSentChan)
 	})
 
@@ -307,14 +306,9 @@ func (s *Snooper) createRequestProcessingStream(callCtx *ProxyCallContext, r *ht
 // Duration is read from callCtx.CallDuration(), which must be set before the returned
 // reader is closed (deferred Close triggers the logging goroutine).
 func (s *Snooper) createResponseProcessingStream(callCtx *ProxyCallContext, r *http.Request, resp *http.Response) io.ReadCloser {
-	// Create tee stream for logging (buffer-based, never blocks)
-	// Use Content-Length as size hint to pre-allocate buffer and avoid reallocations
-	loggedStream := s.createTeeLogStreamWithSizeHint(resp.Body, resp.ContentLength, func(reader io.ReadCloser) {
-		// Wait for request logging to complete (preserves log ordering)
+	loggedStream := s.createTeeLogStreamWithSizeHint(resp.Body, resp.ContentLength, func(data []byte) {
 		<-callCtx.reqSentChan
-
-		// Log response (reader backed by buffer, instant read)
-		s.logResponse(callCtx, r, resp, reader)
+		s.logResponse(callCtx, r, resp, data)
 	})
 
 	return loggedStream

@@ -68,6 +68,10 @@ func (op *OrderedProcessor) WaitForSequence(sequence uint64) bool {
 	case <-op.stopChan:
 		return false
 	case <-time.After(5 * time.Second):
+		op.mutex.Lock()
+		delete(op.waiters, sequence)
+		op.mutex.Unlock()
+
 		return true
 	}
 }

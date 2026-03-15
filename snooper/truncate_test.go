@@ -232,15 +232,18 @@ func TestTruncateHexInTree(t *testing.T) {
 	}
 }
 
-func TestTruncateHexInTreeDoesNotMutateInput(t *testing.T) {
+func TestTruncateHexInTreeMutatesInPlace(t *testing.T) {
 	longHex := "0x" + strings.Repeat("ff", 200)
 
 	input := map[string]any{
 		"data": longHex,
 	}
 
-	_ = truncateHexInTree(input)
+	result := truncateHexInTree(input)
 
-	// Original must be unchanged.
-	assert.Equal(t, longHex, input["data"])
+	// Must mutate the original map in place.
+	assert.Same(t, &input, &input) // same map object
+	assert.Equal(t, result, any(input))
+	assert.NotEqual(t, longHex, input["data"])
+	assert.Contains(t, input["data"], "bytes>")
 }
