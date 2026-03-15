@@ -69,7 +69,17 @@ func (s *Snooper) beautifyJSONForLog(body []byte) []byte {
 
 // formatHexBodyForLog formats a hex-encoded body (e.g. SSZ) for log
 // output, optionally truncating large values when truncation is enabled.
+// When truncation applies, only the first and last preview bytes are
+// hex-encoded, avoiding a full 2× allocation for large payloads.
 func (s *Snooper) formatHexBodyForLog(bodyData []byte) string {
+	if s.logTruncationEnabled && len(bodyData) > hexTruncateThreshold/2 {
+		// Only encode the preview bytes instead of the entire body.
+		prefix := hex.EncodeToString(bodyData[:hexTruncatePreviewLen/2])
+		suffix := hex.EncodeToString(bodyData[len(bodyData)-hexTruncatePreviewLen/2:])
+
+		return fmt.Sprintf("0x%s...%s <%d bytes>", prefix, suffix, len(bodyData))
+	}
+
 	str := fmt.Sprintf("0x%s", hex.EncodeToString(bodyData))
 	if s.logTruncationEnabled {
 		str = truncateHexValue(str)
@@ -130,22 +140,26 @@ func (r *logReadCloser) Close() error {
 	// Close original stream
 	err := r.original.Close()
 
-	// Capture buffer data before spawning goroutine
+	// Capture buffer data and callbacks before spawning goroutine.
+	// Extracting logFn/logger avoids capturing r in the closure,
+	// allowing GC to free the buffer, original stream, and tee reader
+	// while the logging goroutine runs.
 	data := r.buf.Bytes()
+	logFn := r.logFn
+	logger := r.logger
 
-	// Spawn goroutine for async logging (preserves current behavior)
 	go func() {
 		defer func() {
 			if panicErr := recover(); panicErr != nil {
 				if err2, ok := panicErr.(error); ok {
-					r.logger.WithError(err2).Errorf("uncaught panic in log reader: %v, stack: %v", panicErr, string(debug.Stack()))
+					logger.WithError(err2).Errorf("uncaught panic in log reader: %v, stack: %v", panicErr, string(debug.Stack()))
 				} else {
-					r.logger.Errorf("uncaught panic in log reader: %v, stack: %v", panicErr, string(debug.Stack()))
+					logger.Errorf("uncaught panic in log reader: %v, stack: %v", panicErr, string(debug.Stack()))
 				}
 			}
 		}()
 
-		r.logFn(data)
+		logFn(data)
 	}()
 
 	return err
@@ -192,6 +206,8 @@ func (s *Snooper) logRequest(ctx *ProxyCallContext, req *http.Request, bodyBytes
 		if beautifiedJSON := s.beautifyJSONForLog(bodyData); len(beautifiedJSON) > 0 {
 			logFields["type"] = "json"
 			logFields["body"] = string(beautifiedJSON)
+			// TODO: beautifyJSONForLog already unmarshals internally — refactor
+			// to unmarshal once and reuse the tree for both display and parsedData.
 			_ = json.Unmarshal(bodyData, &parsedData)
 		} else {
 			logFields["type"] = "unknown"
@@ -280,6 +296,8 @@ func (s *Snooper) logResponse(ctx *ProxyCallContext, req *http.Request, rsp *htt
 		if beautifiedJSON := s.beautifyJSONForLog(bodyData); len(beautifiedJSON) > 0 {
 			logFields["type"] = "json"
 			logFields["body"] = string(beautifiedJSON)
+			// TODO: beautifyJSONForLog already unmarshals internally — refactor
+			// to unmarshal once and reuse the tree for both display and parsedData.
 			_ = json.Unmarshal(bodyData, &parsedData)
 		} else {
 			logFields["type"] = "unknown"
@@ -297,7 +315,12 @@ func (s *Snooper) logEventResponse(ctx *ProxyCallContext, req *http.Request, rsp
 
 	defer s.orderedProcessor.CompleteSequence(seq)
 
-	// Parse event body
+	// Wait — only holding raw body bytes during the wait
+	if !s.orderedProcessor.WaitForSequence(seq) {
+		return // Context was cancelled
+	}
+
+	// All heavy allocations (parsing, beautify) happen after the wait
 	logFields := logrus.Fields{
 		"color": color.FgGreen,
 	}
@@ -342,11 +365,6 @@ func (s *Snooper) logEventResponse(ctx *ProxyCallContext, req *http.Request, rsp
 			logFields["body"] = string(s.beautifyJSONForLog(bodyJSON))
 			parsedEventData = evt
 		}
-	}
-
-	// Wait for our turn in the processing sequence
-	if !s.orderedProcessor.WaitForSequence(seq) {
-		return // Context was cancelled
 	}
 
 	// Process modules in order
