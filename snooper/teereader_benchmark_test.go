@@ -59,8 +59,8 @@ func BenchmarkTeeLogStream(b *testing.B) {
 			for b.Loop() {
 				source := io.NopCloser(bytes.NewReader(payload))
 
-				reader := snooper.createTeeLogStream(source, func(reader io.ReadCloser) {
-					_, _ = io.ReadAll(reader)
+				reader := snooper.createTeeLogStream(source, func(data []byte) {
+					_ = data
 				})
 
 				_, _ = io.Copy(io.Discard, reader)
@@ -102,8 +102,8 @@ func BenchmarkTeeLogStreamPreallocated(b *testing.B) {
 				source := io.NopCloser(bytes.NewReader(payload))
 
 				// Use size hint for pre-allocation
-				reader := snooper.createTeeLogStreamWithSizeHint(source, int64(len(payload)), func(reader io.ReadCloser) {
-					_, _ = io.ReadAll(reader)
+				reader := snooper.createTeeLogStreamWithSizeHint(source, int64(len(payload)), func(data []byte) {
+					_ = data
 				})
 
 				_, _ = io.Copy(io.Discard, reader)

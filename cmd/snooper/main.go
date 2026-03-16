@@ -22,6 +22,7 @@ type CliArgs struct {
 	bind        string
 	port        int
 	nocolor     bool
+	truncate    bool
 	noapi       bool
 	apiPort     int
 	apiBind     string
@@ -46,6 +47,9 @@ type CliArgs struct {
 	xatuKeepAliveEnabled   bool
 	xatuKeepAliveTime      time.Duration
 	xatuKeepAliveTimeout   time.Duration
+
+	// Hide request/response bodies
+	hideBodies bool
 
 	// Engine API authentication
 	jwtSecret string
@@ -175,6 +179,7 @@ func main() {
 		bind:        getEnvString("SNOOPER_BIND_ADDRESS", "127.0.0.1"),
 		port:        getEnvInt("SNOOPER_PORT", 3000),
 		nocolor:     getEnvBool("SNOOPER_NO_COLOR", false),
+		truncate:    getEnvBool("SNOOPER_TRUNCATE", true),
 		noapi:       getEnvBool("SNOOPER_NO_API", false),
 		apiPort:     getEnvInt("SNOOPER_API_PORT", 0),
 		apiBind:     getEnvString("SNOOPER_API_BIND", "0.0.0.0"),
@@ -200,6 +205,7 @@ func main() {
 		xatuKeepAliveTime:      getEnvDuration("SNOOPER_XATU_KEEPALIVE_TIME", 0),
 		xatuKeepAliveTimeout:   getEnvDuration("SNOOPER_XATU_KEEPALIVE_TIMEOUT", 0),
 		jwtSecret:              getEnvString("SNOOPER_JWT_SECRET", ""),
+		hideBodies:             getEnvBool("SNOOPER_HIDE_BODIES", true),
 	}
 
 	flags := pflag.NewFlagSet("snooper", pflag.ExitOnError)
@@ -209,6 +215,7 @@ func main() {
 	flags.StringVarP(&cliArgs.bind, "bind-address", "b", cliArgs.bind, "Address to bind to and listen for incoming requests (env: SNOOPER_BIND_ADDRESS)")
 	flags.IntVarP(&cliArgs.port, "port", "p", cliArgs.port, "Port to listen for incoming requests (env: SNOOPER_PORT)")
 	flags.BoolVar(&cliArgs.nocolor, "no-color", cliArgs.nocolor, "Do not use terminal colors in output (env: SNOOPER_NO_COLOR)")
+	flags.BoolVar(&cliArgs.truncate, "truncate", cliArgs.truncate, "Truncate large hex values in log output (env: SNOOPER_TRUNCATE)")
 	flags.BoolVar(&cliArgs.noapi, "no-api", cliArgs.noapi, "Do not provide management REST api (env: SNOOPER_NO_API)")
 	flags.IntVar(&cliArgs.apiPort, "api-port", cliArgs.apiPort, "Optional separate port for the snooper API endpoints (env: SNOOPER_API_PORT)")
 	flags.StringVar(&cliArgs.apiBind, "api-bind", cliArgs.apiBind, "Optional address to bind to for the snooper API endpoints (env: SNOOPER_API_BIND)")
@@ -234,6 +241,7 @@ func main() {
 	flags.DurationVar(&cliArgs.xatuKeepAliveTime, "xatu-keepalive-time", cliArgs.xatuKeepAliveTime, "Duration after which keepalive ping is sent (env: SNOOPER_XATU_KEEPALIVE_TIME)")
 	flags.DurationVar(&cliArgs.xatuKeepAliveTimeout, "xatu-keepalive-timeout", cliArgs.xatuKeepAliveTimeout, "Duration to wait for keepalive response (env: SNOOPER_XATU_KEEPALIVE_TIMEOUT)")
 	flags.StringVar(&cliArgs.jwtSecret, "jwt-secret", cliArgs.jwtSecret, "JWT secret for Engine API authentication - file path or hex-encoded value (env: SNOOPER_JWT_SECRET)")
+	flags.BoolVar(&cliArgs.hideBodies, "hide-bodies", cliArgs.hideBodies, "Hide request/response bodies in log output, showing only method, headers, status and timing (env: SNOOPER_HIDE_BODIES)")
 
 	//nolint:errcheck // ignore
 	flags.Parse(os.Args)
@@ -293,6 +301,14 @@ func main() {
 		logger.Errorf("Failed initializing server: %v", err)
 
 		return
+	}
+
+	if cliArgs.truncate {
+		rpcSnooper.EnableLogTruncation()
+	}
+
+	if cliArgs.hideBodies {
+		rpcSnooper.EnableHideBodies()
 	}
 
 	// Start separate API server if api-port is specified

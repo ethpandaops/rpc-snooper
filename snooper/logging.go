@@ -14,7 +14,6 @@ import (
 
 	"github.com/andybalholm/brotli"
 	"github.com/ethpandaops/rpc-snooper/types"
-	"github.com/ethpandaops/rpc-snooper/utils"
 	"github.com/fatih/color"
 	"github.com/sirupsen/logrus"
 )
@@ -37,6 +36,58 @@ func (s *Snooper) beautifyJSON(body []byte) []byte {
 	return res
 }
 
+// beautifyJSONForLog beautifies JSON for log output, optionally
+// truncating large hex values. Module processing and proxy behavior
+// are completely unaffected — only console log display is changed.
+func (s *Snooper) beautifyJSONForLog(body []byte) []byte {
+	if !s.logTruncationEnabled {
+		return s.beautifyJSON(body)
+	}
+
+	var obj any
+
+	err := json.Unmarshal(body, &obj)
+	if err != nil {
+		// Unmarshal failed — beautifyJSON will also fail on the same
+		// input, so log the warning directly and return nil.
+		s.logger.Warnf("failed unmarshaling data: %v", err)
+
+		return nil
+	}
+
+	obj = truncateHexInTree(obj)
+
+	res, err := json.MarshalIndent(obj, "", "  ")
+	if err != nil {
+		// MarshalIndent failed after a successful unmarshal. Fall back
+		// to plain beautification (re-parse is cheap for valid JSON).
+		return s.beautifyJSON(body)
+	}
+
+	return res
+}
+
+// formatHexBodyForLog formats a hex-encoded body (e.g. SSZ) for log
+// output, optionally truncating large values when truncation is enabled.
+// When truncation applies, only the first and last preview bytes are
+// hex-encoded, avoiding a full 2× allocation for large payloads.
+func (s *Snooper) formatHexBodyForLog(bodyData []byte) string {
+	if s.logTruncationEnabled && len(bodyData) > hexTruncateThreshold/2 {
+		// Only encode the preview bytes instead of the entire body.
+		prefix := hex.EncodeToString(bodyData[:hexTruncatePreviewLen/2])
+		suffix := hex.EncodeToString(bodyData[len(bodyData)-hexTruncatePreviewLen/2:])
+
+		return fmt.Sprintf("0x%s...%s <%d bytes>", prefix, suffix, len(bodyData))
+	}
+
+	str := fmt.Sprintf("0x%s", hex.EncodeToString(bodyData))
+	if s.logTruncationEnabled {
+		str = truncateHexValue(str)
+	}
+
+	return str
+}
+
 type logReadCloser struct {
 	reader   io.Reader
 	buf      *bytes.Buffer
@@ -46,14 +97,14 @@ type logReadCloser struct {
 	logger   logrus.FieldLogger
 }
 
-func (s *Snooper) createTeeLogStream(stream io.ReadCloser, logfn func(reader io.ReadCloser)) io.ReadCloser {
+func (s *Snooper) createTeeLogStream(stream io.ReadCloser, logfn func(data []byte)) io.ReadCloser {
 	return s.createTeeLogStreamWithSizeHint(stream, 0, logfn)
 }
 
 // createTeeLogStreamWithSizeHint creates a tee log stream with an optional size hint for buffer pre-allocation.
 // When sizeHint > 0, the buffer is pre-allocated to avoid reallocations during streaming.
 // This provides ~2x throughput improvement for large payloads.
-func (s *Snooper) createTeeLogStreamWithSizeHint(stream io.ReadCloser, sizeHint int64, logfn func(reader io.ReadCloser)) io.ReadCloser {
+func (s *Snooper) createTeeLogStreamWithSizeHint(stream io.ReadCloser, sizeHint int64, logfn func(data []byte)) io.ReadCloser {
 	var buf *bytes.Buffer
 	if sizeHint > 0 {
 		buf = bytes.NewBuffer(make([]byte, 0, sizeHint))
@@ -67,10 +118,8 @@ func (s *Snooper) createTeeLogStreamWithSizeHint(stream io.ReadCloser, sizeHint 
 		reader:   teeReader,
 		buf:      buf,
 		original: stream,
-		logFn: func(data []byte) {
-			logfn(io.NopCloser(bytes.NewReader(data)))
-		},
-		logger: s.logger,
+		logFn:    logfn,
+		logger:   s.logger,
 	}
 }
 
@@ -91,133 +140,156 @@ func (r *logReadCloser) Close() error {
 	// Close original stream
 	err := r.original.Close()
 
-	// Capture buffer data before spawning goroutine
+	// Capture buffer data and callbacks before spawning goroutine.
+	// Extracting logFn/logger avoids capturing r in the closure,
+	// allowing GC to free the buffer, original stream, and tee reader
+	// while the logging goroutine runs.
 	data := r.buf.Bytes()
+	logFn := r.logFn
+	logger := r.logger
 
-	// Spawn goroutine for async logging (preserves current behavior)
 	go func() {
 		defer func() {
 			if panicErr := recover(); panicErr != nil {
 				if err2, ok := panicErr.(error); ok {
-					r.logger.WithError(err2).Errorf("uncaught panic in log reader: %v, stack: %v", panicErr, string(debug.Stack()))
+					logger.WithError(err2).Errorf("uncaught panic in log reader: %v, stack: %v", panicErr, string(debug.Stack()))
 				} else {
-					r.logger.Errorf("uncaught panic in log reader: %v, stack: %v", panicErr, string(debug.Stack()))
+					logger.Errorf("uncaught panic in log reader: %v, stack: %v", panicErr, string(debug.Stack()))
 				}
 			}
 		}()
 
-		r.logFn(data)
+		logFn(data)
 	}()
 
 	return err
 }
 
-func (s *Snooper) logRequest(ctx *ProxyCallContext, req *http.Request, body io.ReadCloser) {
-	// Generate sequence number for this request processing
+func (s *Snooper) logRequest(ctx *ProxyCallContext, req *http.Request, bodyBytes []byte) {
 	seq := s.orderedProcessor.GetNextSequence()
-
 	defer s.orderedProcessor.CompleteSequence(seq)
 
-	// Parse request body
 	contentEncoding := req.Header.Get("Content-Encoding")
-	contentType := req.Header.Get("Content-Type")
 
-	switch contentEncoding {
-	case "gzip":
-		gzipReader, err := gzip.NewReader(body)
-		if err != nil {
-			s.logger.Warnf("failed unpacking gzip request body: %v", err)
-			return
-		}
-		defer gzipReader.Close()
-
-		body = gzipReader
-	case "br":
-		brotliReader := brotli.NewReader(body)
-		body = io.NopCloser(brotliReader)
+	bodyData, err := s.decompressBody(bodyBytes, contentEncoding)
+	if err != nil {
+		return
 	}
+
+	// Wait — only holding decompressed bodyData during the wait
+	if !s.orderedProcessor.WaitForSequence(seq) {
+		return
+	}
+
+	// All heavy allocations (beautifyJSON, Unmarshal, hex encoding) happen after the wait
+	contentType := req.Header.Get("Content-Type")
 
 	logFields := logrus.Fields{
 		"color":  color.FgCyan,
 		"length": req.ContentLength,
 	}
 
-	var bodyData []byte
-
 	var parsedData any
 
 	switch {
 	case req.ContentLength == 0:
-		logFields["body"] = []byte{}
 		bodyData = []byte{}
 	case strings.Contains(contentType, "application/octet-stream"):
-		body = utils.NewHexEncoder(body)
-		bodyData, _ = io.ReadAll(body)
-		logFields["type"] = "ssz"
-		logFields["body"] = fmt.Sprintf("%v\n\n", string(bodyData))
+		if !s.hideBodies {
+			logFields["type"] = "ssz"
+			logFields["body"] = s.formatHexBodyForLog(bodyData)
+		}
+
+		hexEncoded := make([]byte, len(bodyData)*2)
+		hex.Encode(hexEncoded, bodyData)
+		bodyData = hexEncoded
 	default:
-		bodyData, _ = io.ReadAll(body)
+		_ = json.Unmarshal(bodyData, &parsedData)
 
-		if beautifiedJSON := s.beautifyJSON(bodyData); len(beautifiedJSON) > 0 {
-			logFields["type"] = "json"
-			logFields["body"] = fmt.Sprintf("%v\n\n", string(beautifiedJSON))
-
-			// Store parsed JSON for module processing
-			_ = json.Unmarshal(bodyData, &parsedData)
-		} else {
-			logFields["type"] = "unknown"
-			bodyBuf := make([]byte, len(bodyData)*2)
-
-			hex.Encode(bodyBuf, bodyData)
-
-			logFields["body"] = bodyBuf
+		if !s.hideBodies {
+			if beautifiedJSON := s.beautifyJSONForLog(bodyData); len(beautifiedJSON) > 0 {
+				logFields["type"] = "json"
+				logFields["body"] = string(beautifiedJSON)
+			} else {
+				logFields["type"] = "unknown"
+				logFields["body"] = s.formatHexBodyForLog(bodyData)
+			}
 		}
 	}
 
 	ctx.SetData(0, "request_size", len(bodyData))
 
-	// Extract and store jrpc_method for metrics collection if metrics are enabled
-	if s.metricsEnabled && parsedData != nil {
-		if jrpcMethod, ok := parsedData.(map[string]interface{}); ok {
-			ctx.SetData(0, "jrpc_method", jrpcMethod["method"])
+	if parsedData != nil {
+		switch v := parsedData.(type) {
+		case map[string]interface{}:
+			if method, ok := v["method"].(string); ok {
+				logFields["method"] = method
+
+				if s.metricsEnabled {
+					ctx.SetData(0, "jrpc_method", method)
+				}
+			}
+		case []interface{}:
+			methods := make([]string, 0, len(v))
+
+			for _, item := range v {
+				if obj, ok := item.(map[string]interface{}); ok {
+					if method, ok := obj["method"].(string); ok {
+						methods = append(methods, method)
+					}
+				}
+			}
+
+			if len(methods) > 0 {
+				logFields["methods"] = strings.Join(methods, ", ")
+			}
 		}
 	}
 
-	// Wait for our turn in the processing sequence
-	if !s.orderedProcessor.WaitForSequence(seq) {
-		return // Context was cancelled
-	}
-
-	// Process modules in order
 	s.processRequestModules(ctx, req, bodyData, parsedData, contentType)
-
 	s.logger.WithFields(logFields).Infof("REQUEST #%v: %v %v", ctx.callIndex, req.Method, req.URL.String())
 }
 
-func (s *Snooper) logResponse(ctx *ProxyCallContext, req *http.Request, rsp *http.Response, body io.ReadCloser) {
-	// Generate sequence number for this response processing
-	seq := s.orderedProcessor.GetNextSequence()
-
-	defer s.orderedProcessor.CompleteSequence(seq)
-
-	// Parse response body
-	contentEncoding := rsp.Header.Get("Content-Encoding")
-	contentType := rsp.Header.Get("Content-Type")
-
+func (s *Snooper) decompressBody(data []byte, contentEncoding string) ([]byte, error) {
 	switch contentEncoding {
 	case "gzip":
-		gzipReader, err := gzip.NewReader(body)
+		gzipReader, err := gzip.NewReader(bytes.NewReader(data))
 		if err != nil {
-			s.logger.Warnf("failed unpacking gzip response body: %v", err)
-			return
+			s.logger.Warnf("failed unpacking gzip body: %v", err)
+			return nil, err
 		}
 		defer gzipReader.Close()
 
-		body = gzipReader
+		decompressed, _ := io.ReadAll(gzipReader)
+
+		return decompressed, nil
 	case "br":
-		brotliReader := brotli.NewReader(body)
-		body = io.NopCloser(brotliReader)
+		decompressed, _ := io.ReadAll(brotli.NewReader(bytes.NewReader(data)))
+
+		return decompressed, nil
+	default:
+		return data, nil
 	}
+}
+
+func (s *Snooper) logResponse(ctx *ProxyCallContext, req *http.Request, rsp *http.Response, bodyBytes []byte) {
+	seq := s.orderedProcessor.GetNextSequence()
+	defer s.orderedProcessor.CompleteSequence(seq)
+
+	contentEncoding := rsp.Header.Get("Content-Encoding")
+
+	bodyData, err := s.decompressBody(bodyBytes, contentEncoding)
+	if err != nil {
+		return
+	}
+
+	// Wait — only holding decompressed bodyData during the wait
+	if !s.orderedProcessor.WaitForSequence(seq) {
+		return
+	}
+
+	// All heavy allocations happen after the wait
+	contentType := rsp.Header.Get("Content-Type")
 
 	logFields := logrus.Fields{
 		"status": rsp.StatusCode,
@@ -230,42 +302,39 @@ func (s *Snooper) logResponse(ctx *ProxyCallContext, req *http.Request, rsp *htt
 		logFields["color"] = color.FgRed
 	}
 
-	var bodyData []byte
-
 	var parsedData any
 
 	switch {
 	case rsp.ContentLength == 0:
-		logFields["body"] = []byte{}
 		bodyData = []byte{}
 	case strings.Contains(contentType, "application/octet-stream"):
-		body = utils.NewHexEncoder(body)
-		bodyData, _ = io.ReadAll(body)
-		logFields["type"] = "ssz"
-		logFields["body"] = fmt.Sprintf("%v\n\n", string(bodyData))
+		if !s.hideBodies {
+			logFields["type"] = "ssz"
+			logFields["body"] = s.formatHexBodyForLog(bodyData)
+		}
+
+		hexEncoded := make([]byte, len(bodyData)*2)
+		hex.Encode(hexEncoded, bodyData)
+		bodyData = hexEncoded
 	default:
-		bodyData, _ = io.ReadAll(body)
-		if beautifiedJSON := s.beautifyJSON(bodyData); len(beautifiedJSON) > 0 {
-			logFields["type"] = "json"
-			logFields["body"] = fmt.Sprintf("%v\n\n", string(beautifiedJSON))
-			// Store parsed JSON for module processing
-			_ = json.Unmarshal(bodyData, &parsedData)
-		} else {
-			logFields["type"] = "unknown"
-			bodyBuf := make([]byte, len(bodyData)*2)
-			hex.Encode(bodyBuf, bodyData)
-			logFields["body"] = bodyBuf
+		_ = json.Unmarshal(bodyData, &parsedData)
+
+		if !s.hideBodies {
+			if beautifiedJSON := s.beautifyJSONForLog(bodyData); len(beautifiedJSON) > 0 {
+				logFields["type"] = "json"
+				logFields["body"] = string(beautifiedJSON)
+			} else {
+				logFields["type"] = "unknown"
+				logFields["body"] = s.formatHexBodyForLog(bodyData)
+			}
 		}
 	}
 
-	// Wait for our turn in the processing sequence
-	if !s.orderedProcessor.WaitForSequence(seq) {
-		return // Context was cancelled
+	if d := ctx.CallDuration(); d > 0 {
+		logFields["duration_ms"] = d.Milliseconds()
 	}
 
-	// Process modules in order
 	s.processResponseModules(ctx, req, rsp, bodyData, parsedData, contentType)
-
 	s.logger.WithFields(logFields).Infof("RESPONSE #%v: %v %v", ctx.callIndex, req.Method, req.URL.String())
 }
 
@@ -275,7 +344,12 @@ func (s *Snooper) logEventResponse(ctx *ProxyCallContext, req *http.Request, rsp
 
 	defer s.orderedProcessor.CompleteSequence(seq)
 
-	// Parse event body
+	// Wait — only holding raw body bytes during the wait
+	if !s.orderedProcessor.WaitForSequence(seq) {
+		return // Context was cancelled
+	}
+
+	// All heavy allocations (parsing, beautify) happen after the wait
 	logFields := logrus.Fields{
 		"color": color.FgGreen,
 	}
@@ -308,8 +382,6 @@ func (s *Snooper) logEventResponse(ctx *ProxyCallContext, req *http.Request, rsp
 		}
 	}
 
-	logFields["body"] = body
-
 	var parsedEventData interface{}
 
 	if len(evt) >= 2 {
@@ -317,14 +389,14 @@ func (s *Snooper) logEventResponse(ctx *ProxyCallContext, req *http.Request, rsp
 		if err != nil {
 			s.logger.Warnf("failed parsing event data: %v", err)
 		} else {
-			logFields["body"] = fmt.Sprintf("%v\n\n", string(s.beautifyJSON(bodyJSON)))
+			if !s.hideBodies {
+				logFields["body"] = string(s.beautifyJSONForLog(bodyJSON))
+			}
+
 			parsedEventData = evt
 		}
-	}
-
-	// Wait for our turn in the processing sequence
-	if !s.orderedProcessor.WaitForSequence(seq) {
-		return // Context was cancelled
+	} else if !s.hideBodies {
+		logFields["body"] = body
 	}
 
 	// Process modules in order
