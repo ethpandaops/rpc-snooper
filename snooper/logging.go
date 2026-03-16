@@ -217,9 +217,30 @@ func (s *Snooper) logRequest(ctx *ProxyCallContext, req *http.Request, bodyBytes
 
 	ctx.SetData(0, "request_size", len(bodyData))
 
-	if s.metricsEnabled && parsedData != nil {
-		if jrpcMethod, ok := parsedData.(map[string]interface{}); ok {
-			ctx.SetData(0, "jrpc_method", jrpcMethod["method"])
+	if parsedData != nil {
+		switch v := parsedData.(type) {
+		case map[string]interface{}:
+			if method, ok := v["method"].(string); ok {
+				logFields["method"] = method
+
+				if s.metricsEnabled {
+					ctx.SetData(0, "jrpc_method", method)
+				}
+			}
+		case []interface{}:
+			methods := make([]string, 0, len(v))
+
+			for _, item := range v {
+				if obj, ok := item.(map[string]interface{}); ok {
+					if method, ok := obj["method"].(string); ok {
+						methods = append(methods, method)
+					}
+				}
+			}
+
+			if len(methods) > 0 {
+				logFields["methods"] = strings.Join(methods, ", ")
+			}
 		}
 	}
 
@@ -303,6 +324,10 @@ func (s *Snooper) logResponse(ctx *ProxyCallContext, req *http.Request, rsp *htt
 			logFields["type"] = "unknown"
 			logFields["body"] = s.formatHexBodyForLog(bodyData)
 		}
+	}
+
+	if d := ctx.CallDuration(); d > 0 {
+		logFields["duration_ms"] = d.Milliseconds()
 	}
 
 	s.processResponseModules(ctx, req, rsp, bodyData, parsedData, contentType)
