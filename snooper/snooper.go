@@ -43,6 +43,9 @@ type Snooper struct {
 	// Log truncation
 	logTruncationEnabled bool
 
+	// Hide request/response bodies
+	hideBodies bool
+
 	// Flow control
 	flowEnabled bool
 	flowBlocked map[string]bool
@@ -108,6 +111,13 @@ func NewSnooper(target string, logger logrus.FieldLogger, xatuConfig *xatu.Confi
 // Call this once at startup before serving requests.
 func (s *Snooper) EnableLogTruncation() {
 	s.logTruncationEnabled = true
+}
+
+// EnableHideBodies suppresses request/response body logging.
+// When enabled, only method, headers, status and timing are logged.
+// Call this once at startup before serving requests.
+func (s *Snooper) EnableHideBodies() {
+	s.hideBodies = true
 }
 
 func (s *Snooper) Shutdown() {

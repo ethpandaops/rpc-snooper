@@ -48,6 +48,9 @@ type CliArgs struct {
 	xatuKeepAliveTime      time.Duration
 	xatuKeepAliveTimeout   time.Duration
 
+	// Hide request/response bodies
+	hideBodies bool
+
 	// Engine API authentication
 	jwtSecret string
 }
@@ -202,6 +205,7 @@ func main() {
 		xatuKeepAliveTime:      getEnvDuration("SNOOPER_XATU_KEEPALIVE_TIME", 0),
 		xatuKeepAliveTimeout:   getEnvDuration("SNOOPER_XATU_KEEPALIVE_TIMEOUT", 0),
 		jwtSecret:              getEnvString("SNOOPER_JWT_SECRET", ""),
+		hideBodies:             getEnvBool("SNOOPER_HIDE_BODIES", true),
 	}
 
 	flags := pflag.NewFlagSet("snooper", pflag.ExitOnError)
@@ -237,6 +241,7 @@ func main() {
 	flags.DurationVar(&cliArgs.xatuKeepAliveTime, "xatu-keepalive-time", cliArgs.xatuKeepAliveTime, "Duration after which keepalive ping is sent (env: SNOOPER_XATU_KEEPALIVE_TIME)")
 	flags.DurationVar(&cliArgs.xatuKeepAliveTimeout, "xatu-keepalive-timeout", cliArgs.xatuKeepAliveTimeout, "Duration to wait for keepalive response (env: SNOOPER_XATU_KEEPALIVE_TIMEOUT)")
 	flags.StringVar(&cliArgs.jwtSecret, "jwt-secret", cliArgs.jwtSecret, "JWT secret for Engine API authentication - file path or hex-encoded value (env: SNOOPER_JWT_SECRET)")
+	flags.BoolVar(&cliArgs.hideBodies, "hide-bodies", cliArgs.hideBodies, "Hide request/response bodies in log output, showing only method, headers, status and timing (env: SNOOPER_HIDE_BODIES)")
 
 	//nolint:errcheck // ignore
 	flags.Parse(os.Args)
@@ -300,6 +305,10 @@ func main() {
 
 	if cliArgs.truncate {
 		rpcSnooper.EnableLogTruncation()
+	}
+
+	if cliArgs.hideBodies {
+		rpcSnooper.EnableHideBodies()
 	}
 
 	// Start separate API server if api-port is specified
