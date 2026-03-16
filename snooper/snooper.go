@@ -43,6 +43,15 @@ type Snooper struct {
 	// Log truncation
 	logTruncationEnabled bool
 
+	// When true, request/response bodies are hidden from log output
+	hideBodies bool
+
+	// When true, SSZ bodies are shown as raw hex instead of method+size
+	showOctetBody bool
+
+	// When true, SSZ bodies are fully decoded into human-readable fields
+	decodeSSZBody bool
+
 	// Flow control
 	flowEnabled bool
 	flowBlocked map[string]bool
@@ -108,6 +117,22 @@ func NewSnooper(target string, logger logrus.FieldLogger, xatuConfig *xatu.Confi
 // Call this once at startup before serving requests.
 func (s *Snooper) EnableLogTruncation() {
 	s.logTruncationEnabled = true
+}
+
+// EnableHideBodies hides request/response bodies from log output.
+// Only method names, headers, status codes, and timing are shown.
+func (s *Snooper) EnableHideBodies() {
+	s.hideBodies = true
+}
+
+// EnableOctetBody makes SSZ bodies display as raw hex instead of method+size.
+func (s *Snooper) EnableOctetBody() {
+	s.showOctetBody = true
+}
+
+// EnableDecodeSSZ enables full SSZ decoding into human-readable fields.
+func (s *Snooper) EnableDecodeSSZ() {
+	s.decodeSSZBody = true
 }
 
 func (s *Snooper) Shutdown() {

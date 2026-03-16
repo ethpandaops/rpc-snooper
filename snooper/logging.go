@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/andybalholm/brotli"
+	sszpkg "github.com/ethpandaops/rpc-snooper/ssz"
 	"github.com/ethpandaops/rpc-snooper/types"
 	"github.com/fatih/color"
 	"github.com/sirupsen/logrus"
@@ -193,25 +194,22 @@ func (s *Snooper) logRequest(ctx *ProxyCallContext, req *http.Request, bodyBytes
 
 	switch {
 	case req.ContentLength == 0:
-		logFields["body"] = []byte{}
 		bodyData = []byte{}
 	case strings.Contains(contentType, "application/octet-stream"):
-		logFields["type"] = "ssz"
-		logFields["body"] = s.formatHexBodyForLog(bodyData)
-
-		hexEncoded := make([]byte, len(bodyData)*2)
-		hex.Encode(hexEncoded, bodyData)
-		bodyData = hexEncoded
+		if !s.hideBodies {
+			s.formatSSZForLog(bodyData, req.URL.Path, true, logFields, &parsedData)
+		}
 	default:
-		if beautifiedJSON := s.beautifyJSONForLog(bodyData); len(beautifiedJSON) > 0 {
-			logFields["type"] = "json"
-			logFields["body"] = string(beautifiedJSON)
-			// TODO: beautifyJSONForLog already unmarshals internally — refactor
-			// to unmarshal once and reuse the tree for both display and parsedData.
-			_ = json.Unmarshal(bodyData, &parsedData)
-		} else {
-			logFields["type"] = "unknown"
-			logFields["body"] = s.formatHexBodyForLog(bodyData)
+		_ = json.Unmarshal(bodyData, &parsedData)
+
+		if !s.hideBodies {
+			if beautifiedJSON := s.beautifyJSONForLog(bodyData); len(beautifiedJSON) > 0 {
+				logFields["type"] = "json"
+				logFields["body"] = string(beautifiedJSON)
+			} else {
+				logFields["type"] = "unknown"
+				logFields["body"] = s.formatHexBodyForLog(bodyData)
+			}
 		}
 	}
 
@@ -221,6 +219,11 @@ func (s *Snooper) logRequest(ctx *ProxyCallContext, req *http.Request, bodyBytes
 		if jrpcMethod, ok := parsedData.(map[string]interface{}); ok {
 			ctx.SetData(0, "jrpc_method", jrpcMethod["method"])
 		}
+	}
+
+	// For SSZ REST endpoints, derive jrpc_method from the URL path
+	if endpoint := sszpkg.MatchRoute(req.URL.Path); endpoint != nil {
+		ctx.SetData(0, "jrpc_method", endpoint.Method)
 	}
 
 	s.processRequestModules(ctx, req, bodyData, parsedData, contentType)
@@ -283,25 +286,27 @@ func (s *Snooper) logResponse(ctx *ProxyCallContext, req *http.Request, rsp *htt
 
 	switch {
 	case rsp.ContentLength == 0:
-		logFields["body"] = []byte{}
 		bodyData = []byte{}
 	case strings.Contains(contentType, "application/octet-stream"):
-		logFields["type"] = "ssz"
-		logFields["body"] = s.formatHexBodyForLog(bodyData)
+		if !s.hideBodies {
+			logFields["type"] = "ssz"
+			logFields["body"] = s.formatHexBodyForLog(bodyData)
+		}
 
 		hexEncoded := make([]byte, len(bodyData)*2)
 		hex.Encode(hexEncoded, bodyData)
 		bodyData = hexEncoded
 	default:
-		if beautifiedJSON := s.beautifyJSONForLog(bodyData); len(beautifiedJSON) > 0 {
-			logFields["type"] = "json"
-			logFields["body"] = string(beautifiedJSON)
-			// TODO: beautifyJSONForLog already unmarshals internally — refactor
-			// to unmarshal once and reuse the tree for both display and parsedData.
-			_ = json.Unmarshal(bodyData, &parsedData)
-		} else {
-			logFields["type"] = "unknown"
-			logFields["body"] = s.formatHexBodyForLog(bodyData)
+		_ = json.Unmarshal(bodyData, &parsedData)
+
+		if !s.hideBodies {
+			if beautifiedJSON := s.beautifyJSONForLog(bodyData); len(beautifiedJSON) > 0 {
+				logFields["type"] = "json"
+				logFields["body"] = string(beautifiedJSON)
+			} else {
+				logFields["type"] = "unknown"
+				logFields["body"] = s.formatHexBodyForLog(bodyData)
+			}
 		}
 	}
 
@@ -353,8 +358,6 @@ func (s *Snooper) logEventResponse(ctx *ProxyCallContext, req *http.Request, rsp
 		}
 	}
 
-	logFields["body"] = body
-
 	var parsedEventData interface{}
 
 	if len(evt) >= 2 {
@@ -362,9 +365,14 @@ func (s *Snooper) logEventResponse(ctx *ProxyCallContext, req *http.Request, rsp
 		if err != nil {
 			s.logger.Warnf("failed parsing event data: %v", err)
 		} else {
-			logFields["body"] = string(s.beautifyJSONForLog(bodyJSON))
+			if !s.hideBodies {
+				logFields["body"] = string(s.beautifyJSONForLog(bodyJSON))
+			}
+
 			parsedEventData = evt
 		}
+	} else if !s.hideBodies {
+		logFields["body"] = body
 	}
 
 	// Process modules in order
@@ -442,6 +450,91 @@ func (s *Snooper) processResponseModules(ctx *ProxyCallContext, req *http.Reques
 	if s.metricsEnabled {
 		s.collectMetrics(req, respCtx)
 	}
+}
+
+// formatSSZForLog populates logFields for an SSZ body using a three-tier strategy:
+//
+//	Default:      show method name + byte size (zero decode overhead)
+//	--octet:      show raw hex dump
+//	--decode-ssz: decode SSZ into human-readable JSON fields
+func (s *Snooper) formatSSZForLog(
+	data []byte, urlPath string, isRequest bool,
+	logFields logrus.Fields, parsedData *any,
+) {
+	// Tier 1: --octet — raw hex, no route matching
+	if s.showOctetBody {
+		logFields["type"] = "ssz"
+		logFields["body"] = s.formatHexBodyForLog(data)
+
+		return
+	}
+
+	// Resolve method name from the REST path (cheap regex match)
+	endpoint := sszpkg.MatchRoute(urlPath)
+	if endpoint == nil {
+		logFields["type"] = "ssz"
+		logFields["body"] = fmt.Sprintf("<%d bytes>", len(data))
+
+		return
+	}
+
+	// Tier 2: default — method name + size, no decoding
+	if !s.decodeSSZBody {
+		logFields["type"] = fmt.Sprintf("ssz (%s)", endpoint.Method)
+		logFields["body"] = fmt.Sprintf("<%d bytes>", len(data))
+
+		return
+	}
+
+	// Tier 3: --decode-ssz — full SSZ decode
+	schema := endpoint.RespSchema
+	if isRequest {
+		schema = endpoint.ReqSchema
+	}
+
+	if schema == nil {
+		logFields["type"] = fmt.Sprintf("ssz (%s)", endpoint.Method)
+		logFields["body"] = fmt.Sprintf("<%d bytes>", len(data))
+
+		return
+	}
+
+	decoded, err := sszpkg.Decode(data, schema)
+	if err != nil {
+		s.logger.WithError(err).Debugf(
+			"SSZ decode failed for %s (%s)", endpoint.Method, schema.Name)
+
+		logFields["type"] = fmt.Sprintf("ssz (%s)", endpoint.Method)
+		logFields["body"] = fmt.Sprintf("<%d bytes>", len(data))
+
+		return
+	}
+
+	body, err := json.MarshalIndent(decoded, "", "  ")
+	if err != nil {
+		logFields["type"] = fmt.Sprintf("ssz (%s)", endpoint.Method)
+		logFields["body"] = fmt.Sprintf("<%d bytes>", len(data))
+
+		return
+	}
+
+	logBody := string(body)
+
+	if s.logTruncationEnabled {
+		var tree any
+
+		if json.Unmarshal(body, &tree) == nil {
+			tree = truncateHexInTree(tree)
+
+			if truncated, err2 := json.MarshalIndent(tree, "", "  "); err2 == nil {
+				logBody = string(truncated)
+			}
+		}
+	}
+
+	logFields["type"] = fmt.Sprintf("ssz (%s)", endpoint.Method)
+	logFields["body"] = logBody
+	*parsedData = decoded
 }
 
 // processEventModules processes event stream data through modules using already parsed event data

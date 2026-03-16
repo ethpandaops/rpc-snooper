@@ -23,6 +23,9 @@ type CliArgs struct {
 	port        int
 	nocolor     bool
 	truncate    bool
+	hideBodies  bool
+	octet       bool
+	decodeSSZ   bool
 	noapi       bool
 	apiPort     int
 	apiBind     string
@@ -177,6 +180,9 @@ func main() {
 		port:        getEnvInt("SNOOPER_PORT", 3000),
 		nocolor:     getEnvBool("SNOOPER_NO_COLOR", false),
 		truncate:    getEnvBool("SNOOPER_TRUNCATE", true),
+		hideBodies:  getEnvBool("SNOOPER_HIDE_BODIES", true),
+		octet:       getEnvBool("SNOOPER_OCTET", false),
+		decodeSSZ:   getEnvBool("SNOOPER_DECODE_SSZ", false),
 		noapi:       getEnvBool("SNOOPER_NO_API", false),
 		apiPort:     getEnvInt("SNOOPER_API_PORT", 0),
 		apiBind:     getEnvString("SNOOPER_API_BIND", "0.0.0.0"),
@@ -212,6 +218,9 @@ func main() {
 	flags.IntVarP(&cliArgs.port, "port", "p", cliArgs.port, "Port to listen for incoming requests (env: SNOOPER_PORT)")
 	flags.BoolVar(&cliArgs.nocolor, "no-color", cliArgs.nocolor, "Do not use terminal colors in output (env: SNOOPER_NO_COLOR)")
 	flags.BoolVar(&cliArgs.truncate, "truncate", cliArgs.truncate, "Truncate large hex values in log output (env: SNOOPER_TRUNCATE)")
+	flags.BoolVar(&cliArgs.hideBodies, "hide-bodies", cliArgs.hideBodies, "Hide request/response bodies in log output, showing only method, headers, status and timing (env: SNOOPER_HIDE_BODIES)")
+	flags.BoolVar(&cliArgs.octet, "octet", cliArgs.octet, "Show SSZ bodies as raw hex (env: SNOOPER_OCTET)")
+	flags.BoolVar(&cliArgs.decodeSSZ, "decode-ssz", cliArgs.decodeSSZ, "Decode SSZ bodies into human-readable fields (env: SNOOPER_DECODE_SSZ)")
 	flags.BoolVar(&cliArgs.noapi, "no-api", cliArgs.noapi, "Do not provide management REST api (env: SNOOPER_NO_API)")
 	flags.IntVar(&cliArgs.apiPort, "api-port", cliArgs.apiPort, "Optional separate port for the snooper API endpoints (env: SNOOPER_API_PORT)")
 	flags.StringVar(&cliArgs.apiBind, "api-bind", cliArgs.apiBind, "Optional address to bind to for the snooper API endpoints (env: SNOOPER_API_BIND)")
@@ -300,6 +309,18 @@ func main() {
 
 	if cliArgs.truncate {
 		rpcSnooper.EnableLogTruncation()
+	}
+
+	if cliArgs.hideBodies {
+		rpcSnooper.EnableHideBodies()
+	}
+
+	if cliArgs.octet {
+		rpcSnooper.EnableOctetBody()
+	}
+
+	if cliArgs.decodeSSZ {
+		rpcSnooper.EnableDecodeSSZ()
 	}
 
 	// Start separate API server if api-port is specified
