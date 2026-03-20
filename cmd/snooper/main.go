@@ -186,6 +186,8 @@ func main() {
 		apiAuth:     getEnvString("SNOOPER_API_AUTH", ""),
 		metricsPort: getEnvInt("SNOOPER_METRICS_PORT", 0),
 		metricsBind: getEnvString("SNOOPER_METRICS_BIND", "127.0.0.1"),
+		jwtSecret:   getEnvString("SNOOPER_JWT_SECRET", ""),
+		hideBodies:  getEnvBool("SNOOPER_HIDE_BODIES", false),
 
 		// Xatu defaults from environment
 		xatuEnabled:            getEnvBool("SNOOPER_XATU_ENABLED", false),
@@ -204,8 +206,6 @@ func main() {
 		xatuKeepAliveEnabled:   getEnvBool("SNOOPER_XATU_KEEPALIVE_ENABLED", false),
 		xatuKeepAliveTime:      getEnvDuration("SNOOPER_XATU_KEEPALIVE_TIME", 0),
 		xatuKeepAliveTimeout:   getEnvDuration("SNOOPER_XATU_KEEPALIVE_TIMEOUT", 0),
-		jwtSecret:              getEnvString("SNOOPER_JWT_SECRET", ""),
-		hideBodies:             getEnvBool("SNOOPER_HIDE_BODIES", true),
 	}
 
 	flags := pflag.NewFlagSet("snooper", pflag.ExitOnError)
@@ -222,6 +222,8 @@ func main() {
 	flags.StringVar(&cliArgs.apiAuth, "api-auth", cliArgs.apiAuth, "Optional authentication for API endpoints (format: user:pass,user2:pass2,...) (env: SNOOPER_API_AUTH)")
 	flags.IntVar(&cliArgs.metricsPort, "metrics-port", cliArgs.metricsPort, "Optional port for Prometheus metrics endpoint (env: SNOOPER_METRICS_PORT)")
 	flags.StringVar(&cliArgs.metricsBind, "metrics-bind", cliArgs.metricsBind, "Optional address to bind to for the Prometheus metrics endpoint (env: SNOOPER_METRICS_BIND)")
+	flags.StringVar(&cliArgs.jwtSecret, "jwt-secret", cliArgs.jwtSecret, "JWT secret for Engine API authentication - file path or hex-encoded value (env: SNOOPER_JWT_SECRET)")
+	flags.BoolVar(&cliArgs.hideBodies, "hide-bodies", cliArgs.hideBodies, "Hide request/response bodies in log output, showing only method, headers, status and timing (env: SNOOPER_HIDE_BODIES)")
 
 	// Xatu flags
 	flags.BoolVar(&cliArgs.xatuEnabled, "xatu-enabled", cliArgs.xatuEnabled, "Enable Xatu event publishing (env: SNOOPER_XATU_ENABLED)")
@@ -240,8 +242,6 @@ func main() {
 	flags.BoolVar(&cliArgs.xatuKeepAliveEnabled, "xatu-keepalive-enabled", cliArgs.xatuKeepAliveEnabled, "Enable gRPC keepalive (env: SNOOPER_XATU_KEEPALIVE_ENABLED)")
 	flags.DurationVar(&cliArgs.xatuKeepAliveTime, "xatu-keepalive-time", cliArgs.xatuKeepAliveTime, "Duration after which keepalive ping is sent (env: SNOOPER_XATU_KEEPALIVE_TIME)")
 	flags.DurationVar(&cliArgs.xatuKeepAliveTimeout, "xatu-keepalive-timeout", cliArgs.xatuKeepAliveTimeout, "Duration to wait for keepalive response (env: SNOOPER_XATU_KEEPALIVE_TIMEOUT)")
-	flags.StringVar(&cliArgs.jwtSecret, "jwt-secret", cliArgs.jwtSecret, "JWT secret for Engine API authentication - file path or hex-encoded value (env: SNOOPER_JWT_SECRET)")
-	flags.BoolVar(&cliArgs.hideBodies, "hide-bodies", cliArgs.hideBodies, "Hide request/response bodies in log output, showing only method, headers, status and timing (env: SNOOPER_HIDE_BODIES)")
 
 	//nolint:errcheck // ignore
 	flags.Parse(os.Args)
