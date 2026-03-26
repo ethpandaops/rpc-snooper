@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/andybalholm/brotli"
+	sszpkg "github.com/ethpandaops/rpc-snooper/ssz"
 	"github.com/ethpandaops/rpc-snooper/types"
 	"github.com/fatih/color"
 	"github.com/sirupsen/logrus"
@@ -196,13 +197,8 @@ func (s *Snooper) logRequest(ctx *ProxyCallContext, req *http.Request, bodyBytes
 		bodyData = []byte{}
 	case strings.Contains(contentType, "application/octet-stream"):
 		if !s.hideBodies {
-			logFields["type"] = "ssz"
-			logFields["body"] = s.formatHexBodyForLog(bodyData)
+			s.formatSSZForLog(bodyData, req.URL.Path, logFields)
 		}
-
-		hexEncoded := make([]byte, len(bodyData)*2)
-		hex.Encode(hexEncoded, bodyData)
-		bodyData = hexEncoded
 	default:
 		_ = json.Unmarshal(bodyData, &parsedData)
 
@@ -244,6 +240,11 @@ func (s *Snooper) logRequest(ctx *ProxyCallContext, req *http.Request, bodyBytes
 				logFields["methods"] = strings.Join(methods, ", ")
 			}
 		}
+	}
+
+	// For SSZ REST endpoints, derive jrpc_method from the URL path
+	if endpoint := sszpkg.MatchRoute(req.URL.Path); endpoint != nil {
+		ctx.SetData(0, "jrpc_method", endpoint.Method)
 	}
 
 	s.processRequestModules(ctx, req, bodyData, parsedData, contentType)
@@ -309,13 +310,8 @@ func (s *Snooper) logResponse(ctx *ProxyCallContext, req *http.Request, rsp *htt
 		bodyData = []byte{}
 	case strings.Contains(contentType, "application/octet-stream"):
 		if !s.hideBodies {
-			logFields["type"] = "ssz"
-			logFields["body"] = s.formatHexBodyForLog(bodyData)
+			s.formatSSZForLog(bodyData, req.URL.Path, logFields)
 		}
-
-		hexEncoded := make([]byte, len(bodyData)*2)
-		hex.Encode(hexEncoded, bodyData)
-		bodyData = hexEncoded
 	default:
 		_ = json.Unmarshal(bodyData, &parsedData)
 
@@ -505,4 +501,22 @@ func (s *Snooper) processEventModules(ctx *ProxyCallContext, _ *http.Request, rs
 	if err != nil {
 		s.logger.WithError(err).Warn("Module processing failed for event stream")
 	}
+}
+
+// formatSSZForLog populates logFields for an SSZ body by matching
+// the URL path to an Engine API method name and displaying the byte size.
+func (s *Snooper) formatSSZForLog(
+	data []byte, urlPath string,
+	logFields logrus.Fields,
+) {
+	endpoint := sszpkg.MatchRoute(urlPath)
+	if endpoint == nil {
+		logFields["type"] = "ssz"
+		logFields["body"] = fmt.Sprintf("<%d bytes>", len(data))
+
+		return
+	}
+
+	logFields["type"] = fmt.Sprintf("ssz (%s)", endpoint.Method)
+	logFields["body"] = fmt.Sprintf("<%d bytes>", len(data))
 }
