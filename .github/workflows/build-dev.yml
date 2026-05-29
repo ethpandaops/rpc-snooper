@@ -65,106 +65,55 @@ jobs:
         echo "build_docker=$build_docker" >> $GITHUB_OUTPUT
         echo "docker_tag=$branch_name" >> $GITHUB_OUTPUT
 
-  build_amd64_docker_image:
-    name: "Build amd64 docker image"
+  build_docker:
+    name: "Build snooper docker image"
     needs: [prinfo]
-    if: ${{ needs.prinfo.outputs.build_docker == 'true' }}
+    if: ${{ needs.prinfo.outputs.run_builds == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
     - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      with:
+        fetch-depth: 0
 
     - name: Get build version
       id: vars
       run: echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
 
+    # prepare docker
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
     - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+      uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+    # only same-repository PRs get docker credentials, forked PRs build without pushing
     - name: Login to Docker Hub
-      uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+      if: ${{ needs.prinfo.outputs.build_docker == 'true' }}
+      uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
       with:
         username: ${{ secrets.DOCKERHUB_USERNAME }}
         password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-    - name: Build and push amd64 docker image
+    # build (and push when allowed) a multiarch image tagged with the branch name
+    - name: Build docker image
       env:
         DOCKER_REPO: "ethpandaops/rpc-snooper"
         DOCKER_TAG: ${{ needs.prinfo.outputs.docker_tag }}
         SHA_SHORT: ${{ steps.vars.outputs.sha_short }}
+        BUILD_DOCKER: ${{ needs.prinfo.outputs.build_docker }}
       run: |
+        push_flag=""
+        if [[ "$BUILD_DOCKER" == "true" ]]; then
+          push_flag="--push"
+        else
+          echo "Forked PR: building image for validation only, not pushing."
+        fi
+
         docker buildx build . \
           --file Dockerfile \
-          --platform linux/amd64 \
-          --tag "${DOCKER_REPO}:${DOCKER_TAG}-${SHA_SHORT}-amd64" \
-          --push
-
-  build_arm64_docker_image:
-    name: "Build arm64 docker image"
-    needs: [prinfo]
-    if: ${{ needs.prinfo.outputs.build_docker == 'true' }}
-    runs-on: ubuntu-24.04-arm
-    permissions:
-      contents: read
-    steps:
-    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-    - name: Get build version
-      id: vars
-      run: echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
-
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
-    - name: Login to Docker Hub
-      uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
-      with:
-        username: ${{ secrets.DOCKERHUB_USERNAME }}
-        password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-    - name: Build and push arm64 docker image
-      env:
-        DOCKER_REPO: "ethpandaops/rpc-snooper"
-        DOCKER_TAG: ${{ needs.prinfo.outputs.docker_tag }}
-        SHA_SHORT: ${{ steps.vars.outputs.sha_short }}
-      run: |
-        docker buildx build . \
-          --file Dockerfile \
-          --platform linux/arm64 \
-          --tag "${DOCKER_REPO}:${DOCKER_TAG}-${SHA_SHORT}-arm64" \
-          --push
-
-  build_multiarch_image:
-    name: "Build multiarch docker manifest"
-    needs: [prinfo, build_amd64_docker_image, build_arm64_docker_image]
-    if: ${{ needs.prinfo.outputs.build_docker == 'true' }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-    - name: Get build version
-      id: vars
-      run: echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
-
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
-    - name: Login to Docker Hub
-      uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
-      with:
-        username: ${{ secrets.DOCKERHUB_USERNAME }}
-        password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-    # combine the natively-built per-arch images into the branch-named multiarch tags
-    - name: Create multiarch manifests
-      env:
-        DOCKER_REPO: "ethpandaops/rpc-snooper"
-        DOCKER_TAG: ${{ needs.prinfo.outputs.docker_tag }}
-        SHA_SHORT: ${{ steps.vars.outputs.sha_short }}
-      run: |
-        docker buildx imagetools create \
-          -t "${DOCKER_REPO}:${DOCKER_TAG}" \
-          -t "${DOCKER_REPO}:${DOCKER_TAG}-latest" \
-          -t "${DOCKER_REPO}:${DOCKER_TAG}-${SHA_SHORT}" \
-          "${DOCKER_REPO}:${DOCKER_TAG}-${SHA_SHORT}-amd64" \
-          "${DOCKER_REPO}:${DOCKER_TAG}-${SHA_SHORT}-arm64"
+          --platform linux/amd64,linux/arm64 \
+          --tag "${DOCKER_REPO}:${DOCKER_TAG}" \
+          --tag "${DOCKER_REPO}:${DOCKER_TAG}-latest" \
+          --tag "${DOCKER_REPO}:${DOCKER_TAG}-${SHA_SHORT}" \
+          $push_flag
