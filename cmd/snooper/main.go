@@ -51,6 +51,9 @@ type CliArgs struct {
 	// Hide request/response bodies
 	hideBodies bool
 
+	// Inject latency (milliseconds) on engine_newPayload calls
+	delayPayload int
+
 	// Engine API authentication
 	jwtSecret string
 }
@@ -173,21 +176,22 @@ func buildXatuConfig(args *CliArgs) (*xatu.Config, error) {
 func main() {
 	// Load defaults from environment variables
 	cliArgs := CliArgs{
-		verbose:     getEnvBool("SNOOPER_VERBOSE", false),
-		version:     getEnvBool("SNOOPER_VERSION", false),
-		help:        getEnvBool("SNOOPER_HELP", false),
-		bind:        getEnvString("SNOOPER_BIND_ADDRESS", "127.0.0.1"),
-		port:        getEnvInt("SNOOPER_PORT", 3000),
-		nocolor:     getEnvBool("SNOOPER_NO_COLOR", false),
-		truncate:    getEnvBool("SNOOPER_TRUNCATE", true),
-		noapi:       getEnvBool("SNOOPER_NO_API", false),
-		apiPort:     getEnvInt("SNOOPER_API_PORT", 0),
-		apiBind:     getEnvString("SNOOPER_API_BIND", "0.0.0.0"),
-		apiAuth:     getEnvString("SNOOPER_API_AUTH", ""),
-		metricsPort: getEnvInt("SNOOPER_METRICS_PORT", 0),
-		metricsBind: getEnvString("SNOOPER_METRICS_BIND", "127.0.0.1"),
-		jwtSecret:   getEnvString("SNOOPER_JWT_SECRET", ""),
-		hideBodies:  getEnvBool("SNOOPER_HIDE_BODIES", false),
+		verbose:      getEnvBool("SNOOPER_VERBOSE", false),
+		version:      getEnvBool("SNOOPER_VERSION", false),
+		help:         getEnvBool("SNOOPER_HELP", false),
+		bind:         getEnvString("SNOOPER_BIND_ADDRESS", "127.0.0.1"),
+		port:         getEnvInt("SNOOPER_PORT", 3000),
+		nocolor:      getEnvBool("SNOOPER_NO_COLOR", false),
+		truncate:     getEnvBool("SNOOPER_TRUNCATE", true),
+		noapi:        getEnvBool("SNOOPER_NO_API", false),
+		apiPort:      getEnvInt("SNOOPER_API_PORT", 0),
+		apiBind:      getEnvString("SNOOPER_API_BIND", "0.0.0.0"),
+		apiAuth:      getEnvString("SNOOPER_API_AUTH", ""),
+		metricsPort:  getEnvInt("SNOOPER_METRICS_PORT", 0),
+		metricsBind:  getEnvString("SNOOPER_METRICS_BIND", "127.0.0.1"),
+		jwtSecret:    getEnvString("SNOOPER_JWT_SECRET", ""),
+		hideBodies:   getEnvBool("SNOOPER_HIDE_BODIES", false),
+		delayPayload: getEnvInt("SNOOPER_DELAY_PAYLOAD", 0),
 
 		// Xatu defaults from environment
 		xatuEnabled:            getEnvBool("SNOOPER_XATU_ENABLED", false),
@@ -224,6 +228,7 @@ func main() {
 	flags.StringVar(&cliArgs.metricsBind, "metrics-bind", cliArgs.metricsBind, "Optional address to bind to for the Prometheus metrics endpoint (env: SNOOPER_METRICS_BIND)")
 	flags.StringVar(&cliArgs.jwtSecret, "jwt-secret", cliArgs.jwtSecret, "JWT secret for Engine API authentication - file path or hex-encoded value (env: SNOOPER_JWT_SECRET)")
 	flags.BoolVar(&cliArgs.hideBodies, "hide-bodies", cliArgs.hideBodies, "Hide request/response bodies in log output, showing only method, headers, status and timing (env: SNOOPER_HIDE_BODIES)")
+	flags.IntVar(&cliArgs.delayPayload, "delay-payload", cliArgs.delayPayload, "Inject latency (in milliseconds) on engine_newPayload calls, split evenly across the request and response paths (env: SNOOPER_DELAY_PAYLOAD)")
 
 	// Xatu flags
 	flags.BoolVar(&cliArgs.xatuEnabled, "xatu-enabled", cliArgs.xatuEnabled, "Enable Xatu event publishing (env: SNOOPER_XATU_ENABLED)")
@@ -309,6 +314,10 @@ func main() {
 
 	if cliArgs.hideBodies {
 		rpcSnooper.EnableHideBodies()
+	}
+
+	if cliArgs.delayPayload > 0 {
+		rpcSnooper.SetPayloadDelay(time.Duration(cliArgs.delayPayload) * time.Millisecond)
 	}
 
 	// Start separate API server if api-port is specified

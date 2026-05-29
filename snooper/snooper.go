@@ -46,6 +46,9 @@ type Snooper struct {
 	// Hide request/response bodies
 	hideBodies bool
 
+	// Artificial latency injected on engine_newPayload calls
+	payloadDelay time.Duration
+
 	// Flow control
 	flowEnabled bool
 	flowBlocked map[string]bool
@@ -118,6 +121,13 @@ func (s *Snooper) EnableLogTruncation() {
 // Call this once at startup before serving requests.
 func (s *Snooper) EnableHideBodies() {
 	s.hideBodies = true
+}
+
+// SetPayloadDelay configures an artificial latency injected on
+// engine_newPayload calls, split evenly across the request and response
+// paths. Call this once at startup before serving requests.
+func (s *Snooper) SetPayloadDelay(d time.Duration) {
+	s.payloadDelay = d
 }
 
 func (s *Snooper) Shutdown() {

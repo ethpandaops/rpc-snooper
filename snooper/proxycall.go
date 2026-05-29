@@ -2,6 +2,7 @@ package snooper
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -155,8 +156,26 @@ func (s *Snooper) processProxyCall(w http.ResponseWriter, r *http.Request) error
 		return fmt.Errorf("error parsing proxy url: %w", err)
 	}
 
+	// When payload delay is configured we must inspect the JSON-RPC method
+	// (which lives in the request body) before forwarding, so buffer the body
+	// and replace it with an in-memory reader.
+	reqBody := r.Body
+	delayNewPayload := false
+
+	if s.payloadDelay > 0 {
+		bodyBytes, err := io.ReadAll(r.Body)
+		if err != nil {
+			return fmt.Errorf("error reading request body: %w", err)
+		}
+
+		r.Body.Close()
+
+		delayNewPayload = s.isEngineNewPayloadRequest(bodyBytes, r.Header.Get("Content-Encoding"))
+		reqBody = io.NopCloser(bytes.NewReader(bodyBytes))
+	}
+
 	// Create body reader with module processing and logging
-	bodyReader := s.createRequestProcessingStream(callContext, r, r.Body)
+	bodyReader := s.createRequestProcessingStream(callContext, r, reqBody)
 	defer bodyReader.Close()
 
 	// construct request to send to origin server
@@ -171,6 +190,16 @@ func (s *Snooper) processProxyCall(w http.ResponseWriter, r *http.Request) error
 	client := &http.Client{Timeout: 0}
 	req = req.WithContext(callContext.context)
 
+	// Split the configured payload delay evenly across the request and
+	// response paths. reqDelay gets the floor so the two halves still sum to
+	// the configured value for odd millisecond counts.
+	reqDelay := s.payloadDelay / 2
+	respDelay := s.payloadDelay - reqDelay
+
+	if delayNewPayload {
+		s.delayPayloadCall(callContext, reqDelay)
+	}
+
 	callStart := time.Now()
 	resp, err := client.Do(req)
 
@@ -181,6 +210,10 @@ func (s *Snooper) processProxyCall(w http.ResponseWriter, r *http.Request) error
 	if callContext.cancelled {
 		resp.Body.Close()
 		return fmt.Errorf("proxy context cancelled")
+	}
+
+	if delayNewPayload {
+		s.delayPayloadCall(callContext, respDelay)
 	}
 
 	callContext.streamReader = resp.Body
@@ -243,6 +276,62 @@ func (s *Snooper) processProxyCall(w http.ResponseWriter, r *http.Request) error
 	}
 
 	return nil
+}
+
+// delayPayloadCall sleeps for the given duration to inject artificial latency
+// on a proxied call. The call deadline is pushed out first so the timeout
+// watchdog does not fire during the delay, and the sleep aborts early if the
+// call context is cancelled (e.g. the client disconnects).
+func (s *Snooper) delayPayloadCall(callCtx *ProxyCallContext, d time.Duration) {
+	if d <= 0 {
+		return
+	}
+
+	select {
+	case callCtx.updateChan <- s.CallTimeout + d:
+	default:
+	}
+
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+
+	select {
+	case <-callCtx.context.Done():
+	case <-timer.C:
+	}
+}
+
+// isEngineNewPayloadRequest reports whether the JSON-RPC request body is an
+// engine_newPayloadV* call. The body is decompressed if necessary. Anything
+// that fails to parse as a JSON-RPC request is treated as "not newPayload".
+func (s *Snooper) isEngineNewPayloadRequest(body []byte, contentEncoding string) bool {
+	decoded, err := s.decompressBody(body, contentEncoding)
+	if err != nil {
+		return false
+	}
+
+	var parsed any
+	if err := json.Unmarshal(decoded, &parsed); err != nil {
+		return false
+	}
+
+	switch v := parsed.(type) {
+	case map[string]any:
+		return isNewPayloadMethod(v)
+	case []any:
+		for _, item := range v {
+			if obj, ok := item.(map[string]any); ok && isNewPayloadMethod(obj) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+func isNewPayloadMethod(obj map[string]any) bool {
+	method, ok := obj["method"].(string)
+	return ok && strings.HasPrefix(method, "engine_newPayload")
 }
 
 func (s *Snooper) processEventStreamResponse(callContext *ProxyCallContext, r *http.Request, w http.ResponseWriter, rsp *http.Response) (int64, error) {
