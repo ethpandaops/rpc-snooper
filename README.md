@@ -57,7 +57,7 @@ Options:
       --api-bind string       Address to bind for API endpoints (default "0.0.0.0")
       --api-port int          Optional separate port for API endpoints
       --api-auth string       Authentication for API endpoints (format: user:pass,user2:pass2,...)
-      --delay-payload int     Inject latency (in milliseconds) on engine_newPayload calls, split evenly across the request and response paths
+      --delay-payload int     Inject latency (in milliseconds) on engine_newPayload calls, split evenly across the request and response paths (default 0)
       --metrics-bind string   Address to bind for metrics endpoint (default "127.0.0.1")
       --metrics-port int      Port for Prometheus metrics endpoint
       --no-api                Disable management REST API
