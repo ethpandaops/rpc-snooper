@@ -1,0 +1,119 @@
+
+name: Build DEV version
+
+on:
+  pull_request:
+    types: [synchronize]
+  workflow_dispatch:
+    inputs:
+      docker_tag:
+        description: "Docker Tag Prefix (leave blank for no docker build)"
+        required: false
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  prinfo:
+    name: "Get PR info"
+    runs-on: ubuntu-latest
+    outputs:
+      run_builds: ${{ steps.loadinfo.outputs.run_builds }}
+      build_docker: ${{ steps.loadinfo.outputs.build_docker }}
+      docker_tag: ${{ steps.loadinfo.outputs.docker_tag }}
+    steps:
+    - name: "Load PR info"
+      id: loadinfo
+      env:
+        HAS_DOCKER_IMAGE_LABEL: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'build-docker-image') }}
+        SAME_REPOSITORY_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+        MANUAL_DOCKER_TAG: ${{ inputs.docker_tag }}
+      run: |
+        has_docker_image_label="$HAS_DOCKER_IMAGE_LABEL"
+        same_repository_pr="$SAME_REPOSITORY_PR"
+        run_builds="$has_docker_image_label"
+        build_docker="false"
+        echo "docker image label: $has_docker_image_label"
+        echo "same repository PR: $same_repository_pr"
+
+        branch_name="${GITHUB_HEAD_REF:-${GITHUB_REF#refs/heads/}}"
+        branch_name="$(echo "$branch_name" | sed 's/\//-/g')"
+        echo "branch name: $branch_name"
+
+        manual_tag="$MANUAL_DOCKER_TAG"
+        if [[ ! -z "$manual_tag" ]]; then
+          branch_name="$manual_tag"
+          run_builds="true"
+          build_docker="true"
+        elif [[ "$has_docker_image_label" == "true" ]] && [[ "$same_repository_pr" == "true" ]]; then
+          build_docker="true"
+        elif [[ "$has_docker_image_label" == "true" ]]; then
+          echo "Skipping docker push for forked PR; dispatch this workflow manually to publish a trusted build."
+        fi
+
+        if [[ "$branch_name" == "master" ]] || [[ "$branch_name" =~ ^v[0-9] ]]; then
+          echo "Invalid branch name! Skipping builds"
+          run_builds="false"
+          build_docker="false"
+        fi
+
+        echo "run_builds=$run_builds" >> $GITHUB_OUTPUT
+        echo "build_docker=$build_docker" >> $GITHUB_OUTPUT
+        echo "docker_tag=$branch_name" >> $GITHUB_OUTPUT
+
+  build_docker:
+    name: "Build snooper docker image"
+    needs: [prinfo]
+    if: ${{ needs.prinfo.outputs.run_builds == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      with:
+        fetch-depth: 0
+
+    - name: Get build version
+      id: vars
+      run: echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+    # prepare docker
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+    # only same-repository PRs get docker credentials, forked PRs build without pushing
+    - name: Login to Docker Hub
+      if: ${{ needs.prinfo.outputs.build_docker == 'true' }}
+      uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+    # build (and push when allowed) a multiarch image tagged with the branch name
+    - name: Build docker image
+      env:
+        DOCKER_REPO: "ethpandaops/rpc-snooper"
+        DOCKER_TAG: ${{ needs.prinfo.outputs.docker_tag }}
+        SHA_SHORT: ${{ steps.vars.outputs.sha_short }}
+        BUILD_DOCKER: ${{ needs.prinfo.outputs.build_docker }}
+      run: |
+        push_flag=""
+        if [[ "$BUILD_DOCKER" == "true" ]]; then
+          push_flag="--push"
+        else
+          echo "Forked PR: building image for validation only, not pushing."
+        fi
+
+        docker buildx build . \
+          --file Dockerfile \
+          --platform linux/amd64,linux/arm64 \
+          --tag "${DOCKER_REPO}:${DOCKER_TAG}" \
+          --tag "${DOCKER_REPO}:${DOCKER_TAG}-latest" \
+          --tag "${DOCKER_REPO}:${DOCKER_TAG}-${SHA_SHORT}" \
+          $push_flag
