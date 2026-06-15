@@ -3,14 +3,19 @@ package snooper
 import (
 	"context"
 	"crypto/subtle"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/net/http2"
+	"golang.org/x/net/http2/h2c"
 
 	"github.com/ethpandaops/rpc-snooper/metrics"
 	"github.com/ethpandaops/rpc-snooper/modules"
@@ -34,6 +39,13 @@ type Snooper struct {
 	apiAuth        map[string]string
 	metricsServer  *http.Server
 	metricsEnabled bool
+
+	// Upstream clients. h1Client speaks HTTP/1.1 (JSON-RPC), h2cClient speaks
+	// HTTP/2 cleartext (h2c) for the REST+SSZ Engine API (execution-apis #793).
+	// We forward each call using the same protocol the downstream client used,
+	// so geth's single engine port sees JSON-RPC as HTTP/1.1 and REST as HTTP/2.
+	h1Client  *http.Client
+	h2cClient *http.Client
 
 	callIndexCounter uint64
 	callIndexMutex   sync.Mutex
@@ -80,6 +92,20 @@ func NewSnooper(target string, logger logrus.FieldLogger, xatuConfig *xatu.Confi
 		flowBlocked:          make(map[string]bool),
 		xatuService:          xatuService,
 		jwtSecret:            jwtSecret,
+		h1Client:             &http.Client{Timeout: 0},
+		h2cClient: &http.Client{
+			Timeout: 0,
+			// h2c (cleartext HTTP/2) transport: AllowHTTP lets us use the
+			// "http" scheme, and DialTLSContext dials a plain TCP connection
+			// instead of negotiating TLS.
+			Transport: &http2.Transport{
+				AllowHTTP: true,
+				DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
+					var d net.Dialer
+					return d.DialContext(ctx, network, addr)
+				},
+			},
+		},
 	}
 
 	// Set up metadata fetcher if xatu is enabled
@@ -179,9 +205,12 @@ func (s *Snooper) StartServer(host string, port int, noAPI bool) error {
 	n.Use(negroni.NewRecovery())
 	n.UseHandler(router)
 
+	// Wrap the handler with h2c so the proxy accepts both HTTP/1.1 (JSON-RPC)
+	// and HTTP/2 cleartext prior-knowledge connections (REST+SSZ Engine API,
+	// execution-apis #793) on the same port.
 	srv := &http.Server{
 		Addr:              fmt.Sprintf("%v:%v", host, port),
-		Handler:           n,
+		Handler:           h2c.NewHandler(n, &http2.Server{}),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
