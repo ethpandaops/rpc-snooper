@@ -540,14 +540,15 @@ func (s *Snooper) formatSSZForLog(
 	data []byte, urlPath string,
 	logFields logrus.Fields,
 ) {
-	endpoint := sszpkg.MatchRoute(urlPath)
-	if endpoint == nil {
+	if endpoint := sszpkg.MatchRoute(urlPath); endpoint != nil {
+		logFields["type"] = fmt.Sprintf("ssz (%s)", endpoint.Method)
+	} else {
 		logFields["type"] = "ssz"
-		logFields["body"] = fmt.Sprintf("<%d bytes>", len(data))
-
-		return
 	}
 
-	logFields["type"] = fmt.Sprintf("ssz (%s)", endpoint.Method)
-	logFields["body"] = fmt.Sprintf("<%d bytes>", len(data))
+	// SSZ is binary and not self-describing, so we can't pretty-print it like
+	// JSON. Emit the raw body as hex (honouring truncation) so the on-wire
+	// content is still visible and can be decoded offline. The byte count is
+	// already on the log line via the "length" field.
+	logFields["body"] = s.formatHexBodyForLog(data)
 }
