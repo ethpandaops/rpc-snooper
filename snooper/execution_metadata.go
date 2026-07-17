@@ -248,14 +248,16 @@ func (f *ExecutionMetadataFetcher) fetch(ctx context.Context) error {
 		Commit:  "0x00000000",
 	})
 
-	// Some execution clients (e.g. reth) deserialize the caller's code into a
-	// strict enum of registered client codes and reject unregistered ones like
-	// "RS" with -32602 Invalid params. Retry identifying with a registered
-	// code; the name still identifies the snooper honestly.
+	// The spec requires execution clients to accommodate any two-letter code,
+	// but reth (via alloy's strict ClientCode enum) rejects codes outside its
+	// registered list with -32602 Invalid params. Retry with a registered
+	// consensus-layer code, since the param identifies the consensus side of
+	// the connection; the name still identifies the snooper honestly.
+	// See https://github.com/ethereum/execution-apis/blob/main/src/engine/identification.md
 	var rpcErr *rpcError
 	if errors.As(err, &rpcErr) && rpcErr.Code == -32602 {
 		cv, err = f.requestClientVersion(ctx, xatu.ClientVersionV1{
-			Code:    "GE",
+			Code:    "LH",
 			Name:    "rpc-snooper",
 			Version: "v0.0.0",
 			Commit:  "0x00000000",
