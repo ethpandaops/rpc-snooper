@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -228,84 +229,43 @@ func (f *ExecutionMetadataFetcher) fetchWithRetries(ctx context.Context) error {
 	}
 }
 
+// rpcError is a JSON-RPC error response from the execution client.
+type rpcError struct {
+	Code    int
+	Message string
+}
+
+func (e *rpcError) Error() string {
+	return fmt.Sprintf("RPC error %d: %s", e.Code, e.Message)
+}
+
 // fetch performs a single fetch of execution metadata.
 func (f *ExecutionMetadataFetcher) fetch(ctx context.Context) error {
-	// Build JSON-RPC request for engine_getClientVersionV1
-	// The method takes a ClientVersionV1 param identifying the caller
-	reqBody := map[string]any{
-		"jsonrpc": "2.0",
-		"method":  "engine_getClientVersionV1",
-		"params": []any{
-			xatu.ClientVersionV1{
-				Code:    "RS", // rpc-snooper
-				Name:    "rpc-snooper",
-				Version: "v0.0.0",
-				Commit:  "00000000",
-			},
-		},
-		"id": 1,
+	cv, err := f.requestClientVersion(ctx, xatu.ClientVersionV1{
+		Code:    "RS", // rpc-snooper
+		Name:    "rpc-snooper",
+		Version: "v0.0.0",
+		Commit:  "0x00000000",
+	})
+
+	// Some execution clients (e.g. reth) deserialize the caller's code into a
+	// strict enum of registered client codes and reject unregistered ones like
+	// "RS" with -32602 Invalid params. Retry identifying with a registered
+	// code; the name still identifies the snooper honestly.
+	var rpcErr *rpcError
+	if errors.As(err, &rpcErr) && rpcErr.Code == -32602 {
+		cv, err = f.requestClientVersion(ctx, xatu.ClientVersionV1{
+			Code:    "GE",
+			Name:    "rpc-snooper",
+			Version: "v0.0.0",
+			Commit:  "0x00000000",
+		})
 	}
 
-	reqBytes, err := json.Marshal(reqBody)
 	if err != nil {
-		return fmt.Errorf("failed to marshal request: %w", err)
+		return err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, f.targetURL.String(), bytes.NewReader(reqBytes))
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-
-	// Add JWT auth header if we have a secret
-	if len(f.jwtSecret) > 0 {
-		token, err := f.createJWTToken()
-		if err != nil {
-			return fmt.Errorf("failed to create JWT token: %w", err)
-		}
-
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-
-	resp, err := f.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("failed to execute request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("failed to read response body: %w", err)
-	}
-
-	// Parse JSON-RPC response
-	var rpcResp struct {
-		Result []xatu.ClientVersionV1 `json:"result"`
-		Error  *struct {
-			Code    int    `json:"code"`
-			Message string `json:"message"`
-		} `json:"error"`
-	}
-
-	if err := json.Unmarshal(body, &rpcResp); err != nil {
-		return fmt.Errorf("failed to unmarshal response: %w", err)
-	}
-
-	if rpcResp.Error != nil {
-		return fmt.Errorf("RPC error %d: %s", rpcResp.Error.Code, rpcResp.Error.Message)
-	}
-
-	if len(rpcResp.Result) == 0 {
-		return fmt.Errorf("empty result from engine_getClientVersionV1")
-	}
-
-	// Parse and store metadata
-	cv := rpcResp.Result[0]
 	metadata := f.parseClientVersion(cv)
 
 	f.mu.Lock()
@@ -318,6 +278,78 @@ func (f *ExecutionMetadataFetcher) fetch(ctx context.Context) error {
 	}).Info("fetched execution metadata")
 
 	return nil
+}
+
+// requestClientVersion calls engine_getClientVersionV1 on the execution client,
+// identifying the caller as the given ClientVersionV1, and returns the first
+// client version from the response.
+func (f *ExecutionMetadataFetcher) requestClientVersion(ctx context.Context, identity xatu.ClientVersionV1) (xatu.ClientVersionV1, error) {
+	reqBody := map[string]any{
+		"jsonrpc": "2.0",
+		"method":  "engine_getClientVersionV1",
+		"params":  []any{identity},
+		"id":      1,
+	}
+
+	reqBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return xatu.ClientVersionV1{}, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, f.targetURL.String(), bytes.NewReader(reqBytes))
+	if err != nil {
+		return xatu.ClientVersionV1{}, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+
+	// Add JWT auth header if we have a secret
+	if len(f.jwtSecret) > 0 {
+		token, err := f.createJWTToken()
+		if err != nil {
+			return xatu.ClientVersionV1{}, fmt.Errorf("failed to create JWT token: %w", err)
+		}
+
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+
+	resp, err := f.httpClient.Do(req)
+	if err != nil {
+		return xatu.ClientVersionV1{}, fmt.Errorf("failed to execute request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return xatu.ClientVersionV1{}, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return xatu.ClientVersionV1{}, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	// Parse JSON-RPC response
+	var rpcResp struct {
+		Result []xatu.ClientVersionV1 `json:"result"`
+		Error  *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+
+	if err := json.Unmarshal(body, &rpcResp); err != nil {
+		return xatu.ClientVersionV1{}, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+
+	if rpcResp.Error != nil {
+		return xatu.ClientVersionV1{}, &rpcError{Code: rpcResp.Error.Code, Message: rpcResp.Error.Message}
+	}
+
+	if len(rpcResp.Result) == 0 {
+		return xatu.ClientVersionV1{}, fmt.Errorf("empty result from engine_getClientVersionV1")
+	}
+
+	return rpcResp.Result[0], nil
 }
 
 // parseClientVersion converts a ClientVersionV1 to ExecutionMetadata.
