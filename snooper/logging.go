@@ -250,6 +250,13 @@ func (s *Snooper) logRequest(ctx *ProxyCallContext, req *http.Request, bodyBytes
 	s.logger.WithFields(logFields).Infof("REQUEST #%v: %v %v", ctx.callIndex, req.Method, req.URL.String())
 }
 
+// maxDecompressedBodySize caps how many bytes decompressBody will materialize
+// from a compressed body. Without a cap, a small gzip or brotli payload can
+// inflate to gigabytes and exhaust memory, which is fatal because the proxy
+// sits inline on the request path. Bodies that decompress beyond this are not
+// logged. The limit is generous enough for real Engine API payloads.
+const maxDecompressedBodySize = 64 << 20 // 64 MiB
+
 func (s *Snooper) decompressBody(data []byte, contentEncoding string) ([]byte, error) {
 	switch contentEncoding {
 	case "gzip":
@@ -260,16 +267,28 @@ func (s *Snooper) decompressBody(data []byte, contentEncoding string) ([]byte, e
 		}
 		defer gzipReader.Close()
 
-		decompressed, _ := io.ReadAll(gzipReader)
-
-		return decompressed, nil
+		return readCapped(gzipReader)
 	case "br":
-		decompressed, _ := io.ReadAll(brotli.NewReader(bytes.NewReader(data)))
-
-		return decompressed, nil
+		return readCapped(brotli.NewReader(bytes.NewReader(data)))
 	default:
 		return data, nil
 	}
+}
+
+// readCapped reads up to maxDecompressedBodySize bytes from r. If the stream
+// produces more than that, it returns an error instead of allocating without
+// bound, which stops decompression bombs from exhausting memory.
+func readCapped(r io.Reader) ([]byte, error) {
+	out, err := io.ReadAll(io.LimitReader(r, maxDecompressedBodySize+1))
+	if err != nil {
+		return nil, err
+	}
+
+	if int64(len(out)) > maxDecompressedBodySize {
+		return nil, fmt.Errorf("decompressed body exceeds %d byte limit", maxDecompressedBodySize)
+	}
+
+	return out, nil
 }
 
 func (s *Snooper) logResponse(ctx *ProxyCallContext, req *http.Request, rsp *http.Response, bodyBytes []byte) {
