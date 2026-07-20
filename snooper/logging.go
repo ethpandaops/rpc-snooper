@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/andybalholm/brotli"
@@ -89,6 +90,7 @@ func (s *Snooper) formatHexBodyForLog(bodyData []byte) string {
 }
 
 type logReadCloser struct {
+	mu       sync.Mutex
 	reader   io.Reader
 	buf      *bytes.Buffer
 	original io.ReadCloser
@@ -123,12 +125,26 @@ func (s *Snooper) createTeeLogStreamWithSizeHint(stream io.ReadCloser, sizeHint 
 	}
 }
 
+// Read and Close both touch the tee reader and its backing buffer, and
+// net/http's transport may Read the request body from its own goroutine while
+// the handler's deferred Close drains it. The mutex serializes the two so the
+// non-thread-safe bytes.Buffer is never accessed concurrently.
 func (r *logReadCloser) Read(p []byte) (n int, err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.closed {
+		return 0, io.EOF
+	}
+
 	return r.reader.Read(p)
 }
 
 func (r *logReadCloser) Close() error {
+	r.mu.Lock()
+
 	if r.closed {
+		r.mu.Unlock()
 		return nil
 	}
 
@@ -147,6 +163,8 @@ func (r *logReadCloser) Close() error {
 	data := r.buf.Bytes()
 	logFn := r.logFn
 	logger := r.logger
+
+	r.mu.Unlock()
 
 	go func() {
 		defer func() {
