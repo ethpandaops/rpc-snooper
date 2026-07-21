@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -21,6 +22,7 @@ type ProxyCallContext struct {
 	deadline     time.Time
 	updateChan   chan time.Duration
 	reqSentChan  chan struct{}
+	streamMutex  sync.Mutex
 	streamReader io.ReadCloser
 	data         map[string]interface{}
 	callDuration time.Duration
@@ -64,8 +66,27 @@ ctxLoop:
 
 	callContext.cancelled.Store(true)
 
-	if callContext.streamReader != nil {
-		callContext.streamReader.Close()
+	callContext.closeStreamReader()
+}
+
+// setStreamReader records the upstream response body so the watchdog can close
+// it on cancellation. The write races the watchdog's read, so it is guarded.
+func (callContext *ProxyCallContext) setStreamReader(r io.ReadCloser) {
+	callContext.streamMutex.Lock()
+	callContext.streamReader = r
+	callContext.streamMutex.Unlock()
+}
+
+// closeStreamReader closes the recorded upstream body if one has been set. The
+// mutex serializes it with setStreamReader; the close itself runs outside the
+// lock so it never blocks a concurrent setter.
+func (callContext *ProxyCallContext) closeStreamReader() {
+	callContext.streamMutex.Lock()
+	r := callContext.streamReader
+	callContext.streamMutex.Unlock()
+
+	if r != nil {
+		r.Close()
 	}
 }
 
@@ -184,7 +205,7 @@ func (s *Snooper) processProxyCall(w http.ResponseWriter, r *http.Request) error
 		return fmt.Errorf("proxy context cancelled")
 	}
 
-	callContext.streamReader = resp.Body
+	callContext.setStreamReader(resp.Body)
 
 	respContentType := resp.Header.Get("Content-Type")
 	isEventStream := respContentType == "text/event-stream" || strings.HasPrefix(r.URL.EscapedPath(), "/eth/v1/events")
