@@ -2,6 +2,8 @@ package snooper
 
 import (
 	"context"
+	"io"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -38,5 +40,29 @@ func TestCancelledFlagRaceFree(t *testing.T) {
 
 	if !cc.cancelled.Load() {
 		t.Fatal("expected cancelled to be set after the timeout fired")
+	}
+}
+
+// The watchdog closes ProxyCallContext.streamReader on cancellation while the
+// request goroutine sets it once the upstream responds. This exercises that
+// set-versus-close interleaving; the mutex keeps it race-free. Run under -race.
+func TestStreamReaderRaceFree(t *testing.T) {
+	for iter := 0; iter < 500; iter++ {
+		cc := &ProxyCallContext{}
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+
+		go func() {
+			defer wg.Done()
+			cc.setStreamReader(io.NopCloser(strings.NewReader("body")))
+		}()
+
+		go func() {
+			defer wg.Done()
+			cc.closeStreamReader()
+		}()
+
+		wg.Wait()
 	}
 }
