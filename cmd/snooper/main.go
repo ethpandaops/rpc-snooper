@@ -329,7 +329,7 @@ func main() {
 		}
 	}
 
-	err = rpcSnooper.StartServer(cliArgs.bind, cliArgs.port, cliArgs.noapi)
+	err = rpcSnooper.StartServer(cliArgs.bind, cliArgs.port, cliArgs.noapi, cliArgs.apiAuth)
 	if err != nil {
 		logger.Errorf("Failed processing server: %v", err)
 	}

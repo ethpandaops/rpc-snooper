@@ -139,7 +139,9 @@ func (s *Snooper) Shutdown() {
 	}
 }
 
-func (s *Snooper) StartServer(host string, port int, noAPI bool) error {
+func (s *Snooper) StartServer(host string, port int, noAPI bool, authConfig string) error {
+	s.configureAPIAuth(authConfig)
+
 	// Start Xatu service if enabled
 	// Note: We use context.Background() because the xatu service workers
 	// need a long-lived context that won't be cancelled until shutdown.
@@ -165,11 +167,36 @@ func (s *Snooper) StartServer(host string, port int, noAPI bool) error {
 		}
 	}
 
+	srv := &http.Server{
+		Addr:              fmt.Sprintf("%v:%v", host, port),
+		Handler:           s.newRootHandler(noAPI),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	s.logger.Infof("listening on: %v", srv.Addr)
+
+	if !noAPI && len(s.apiAuth) > 0 {
+		s.logger.Infof("control API authentication enabled for %d users", len(s.apiAuth))
+	}
+
+	return srv.ListenAndServe()
+}
+
+// newRootHandler builds the proxy-port handler: the control API under
+// /_snooper/ (guarded by Basic auth when api-auth is configured) plus the proxy
+// itself. Auth is scoped to the control subrouter so proxied traffic is never
+// gated.
+func (s *Snooper) newRootHandler(noAPI bool) http.Handler {
 	router := mux.NewRouter()
 
 	if !noAPI {
 		s.api = newAPI(s)
 		apiRouter := router.PathPrefix("/_snooper/").Subrouter()
+
+		if len(s.apiAuth) > 0 {
+			apiRouter.Use(s.requireAPIAuth)
+		}
+
 		s.api.initRouter(apiRouter)
 	}
 
@@ -179,29 +206,11 @@ func (s *Snooper) StartServer(host string, port int, noAPI bool) error {
 	n.Use(negroni.NewRecovery())
 	n.UseHandler(router)
 
-	srv := &http.Server{
-		Addr:              fmt.Sprintf("%v:%v", host, port),
-		Handler:           n,
-		ReadHeaderTimeout: 10 * time.Second,
-	}
-
-	s.logger.Infof("listening on: %v", srv.Addr)
-
-	return srv.ListenAndServe()
+	return n
 }
 
 func (s *Snooper) StartAPIServer(host string, port int, authConfig string) error {
-	// Parse authentication configuration
-	if authConfig != "" {
-		s.apiAuth = make(map[string]string)
-
-		for _, cred := range strings.Split(authConfig, ",") {
-			parts := strings.SplitN(cred, ":", 2)
-			if len(parts) == 2 {
-				s.apiAuth[parts[0]] = parts[1]
-			}
-		}
-	}
+	s.configureAPIAuth(authConfig)
 
 	router := mux.NewRouter()
 
@@ -288,40 +297,69 @@ func (s *Snooper) collectMetrics(req *http.Request, respCtx *types.ResponseConte
 	metrics.PrometheusMetricsRegister(metricsEntry)
 }
 
-func (s *Snooper) authMiddleware(w http.ResponseWriter, r *http.Request, next http.HandlerFunc) {
-	// Extract basic auth credentials
-	auth := r.Header.Get("Authorization")
-	if auth == "" {
-		s.sendUnauthorized(w)
+// configureAPIAuth parses the api-auth config (user:pass,user2:pass2,...) into
+// the credential map. Safe to call from more than one start path.
+func (s *Snooper) configureAPIAuth(authConfig string) {
+	if authConfig == "" {
 		return
 	}
 
+	s.apiAuth = make(map[string]string)
+
+	for _, cred := range strings.Split(authConfig, ",") {
+		parts := strings.SplitN(cred, ":", 2)
+		if len(parts) == 2 {
+			s.apiAuth[parts[0]] = parts[1]
+		}
+	}
+}
+
+// authorized reports whether the request carries valid Basic credentials.
+func (s *Snooper) authorized(r *http.Request) bool {
 	const prefix = "Basic "
+
+	auth := r.Header.Get("Authorization")
 	if !strings.HasPrefix(auth, prefix) {
-		s.sendUnauthorized(w)
-		return
+		return false
 	}
 
 	decoded, err := base64.StdEncoding.DecodeString(auth[len(prefix):])
 	if err != nil {
-		s.sendUnauthorized(w)
-		return
+		return false
 	}
 
 	credentials := string(decoded)
 
 	colonIndex := strings.IndexByte(credentials, ':')
 	if colonIndex < 0 {
-		s.sendUnauthorized(w)
-		return
+		return false
 	}
 
 	username := credentials[:colonIndex]
 	password := credentials[colonIndex+1:]
 
-	// Check credentials
 	expectedPassword, ok := s.apiAuth[username]
-	if !ok || subtle.ConstantTimeCompare([]byte(password), []byte(expectedPassword)) != 1 {
+
+	return ok && subtle.ConstantTimeCompare([]byte(password), []byte(expectedPassword)) == 1
+}
+
+// requireAPIAuth is mux middleware that enforces Basic auth on the routes it
+// wraps. It guards the control API mounted on the proxy port.
+func (s *Snooper) requireAPIAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.authorized(r) {
+			s.sendUnauthorized(w)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+// authMiddleware is the negroni form of the same check, used by the separate
+// API server.
+func (s *Snooper) authMiddleware(w http.ResponseWriter, r *http.Request, next http.HandlerFunc) {
+	if !s.authorized(r) {
 		s.sendUnauthorized(w)
 		return
 	}
