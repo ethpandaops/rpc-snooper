@@ -191,16 +191,13 @@ func (s *Snooper) StartServer(host string, port int, noAPI bool) error {
 }
 
 func (s *Snooper) StartAPIServer(host string, port int, authConfig string) error {
-	// Parse authentication configuration
 	if authConfig != "" {
-		s.apiAuth = make(map[string]string)
-
-		for _, cred := range strings.Split(authConfig, ",") {
-			parts := strings.SplitN(cred, ":", 2)
-			if len(parts) == 2 {
-				s.apiAuth[parts[0]] = parts[1]
-			}
+		apiAuth, err := parseAPIAuth(authConfig)
+		if err != nil {
+			return fmt.Errorf("invalid api-auth: %w", err)
 		}
+
+		s.apiAuth = apiAuth
 	}
 
 	router := mux.NewRouter()
@@ -239,6 +236,25 @@ func (s *Snooper) StartAPIServer(host string, port int, authConfig string) error
 	}()
 
 	return nil
+}
+
+// parseAPIAuth parses the api-auth config (user:pass,user2:pass2,...) into a
+// credential map. Every entry must contain a colon; a malformed entry returns
+// an error instead of being dropped, so a typo cannot silently leave the
+// control API unauthenticated while the operator believes it is protected.
+func parseAPIAuth(authConfig string) (map[string]string, error) {
+	auth := make(map[string]string)
+
+	for _, cred := range strings.Split(authConfig, ",") {
+		parts := strings.SplitN(cred, ":", 2)
+		if len(parts) != 2 || parts[0] == "" {
+			return nil, fmt.Errorf("entry %q must be in the form user:pass", cred)
+		}
+
+		auth[parts[0]] = parts[1]
+	}
+
+	return auth, nil
 }
 
 func (s *Snooper) StartMetricsServer(host string, port int) error {
