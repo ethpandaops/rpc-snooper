@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -245,15 +246,21 @@ func (s *Snooper) processProxyCall(w http.ResponseWriter, r *http.Request) error
 	return nil
 }
 
+// maxSSELineSize bounds how large a single SSE line may grow when it does not
+// fit in one bufio.Reader chunk. Without this, a line longer than the reader's
+// buffer would fall through to readSSELine's own safety cap; this is the value
+// that cap uses, chosen generously above any realistic beacon event.
+const maxSSELineSize = 4 << 20 // 4 MiB
+
 func (s *Snooper) processEventStreamResponse(callContext *ProxyCallContext, r *http.Request, w http.ResponseWriter, rsp *http.Response) (int64, error) {
-	rd := bufio.NewReader(rsp.Body)
+	rd := bufio.NewReaderSize(rsp.Body, 64*1024)
 	written := int64(0)
 
 	for {
 		lineBuf := []byte{}
 
 		for {
-			evt, err := rd.ReadSlice('\n')
+			evt, err := readSSELine(rd, maxSSELineSize)
 			if err != nil {
 				return written, err
 			}
@@ -286,6 +293,51 @@ func (s *Snooper) processEventStreamResponse(callContext *ProxyCallContext, r *h
 		}
 
 		callContext.updateChan <- s.CallTimeout
+	}
+}
+
+// readSSELine reads one line, through and including the trailing '\n', from
+// rd. bufio.Reader.ReadSlice fails with ErrBufferFull when a line does not fit
+// in the reader's internal buffer in one pass; instead of treating that as a
+// terminal error and killing the stream, this accumulates chunks across the
+// boundary and keeps going until it sees a real line ending, a real read
+// error, or the assembled line exceeds maxLen. maxLen guards against an
+// unbounded line from a hostile or broken upstream.
+func readSSELine(rd *bufio.Reader, maxLen int) ([]byte, error) {
+	var line []byte
+
+	for {
+		chunk, err := rd.ReadSlice('\n')
+
+		if errors.Is(err, bufio.ErrBufferFull) {
+			line = append(line, chunk...)
+
+			if len(line) > maxLen {
+				return nil, fmt.Errorf("SSE line exceeds %d byte limit", maxLen)
+			}
+
+			continue
+		}
+
+		if err != nil {
+			return nil, err
+		}
+
+		if line == nil {
+			if len(chunk) > maxLen {
+				return nil, fmt.Errorf("SSE line exceeds %d byte limit", maxLen)
+			}
+
+			return chunk, nil
+		}
+
+		line = append(line, chunk...)
+
+		if len(line) > maxLen {
+			return nil, fmt.Errorf("SSE line exceeds %d byte limit", maxLen)
+		}
+
+		return line, nil
 	}
 }
 
