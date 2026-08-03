@@ -101,12 +101,25 @@ func (s *Snooper) createTeeLogStream(stream io.ReadCloser, logfn func(data []byt
 	return s.createTeeLogStreamWithSizeHint(stream, 0, logfn)
 }
 
+// maxPreallocSize bounds how large a buffer createTeeLogStreamWithSizeHint will
+// pre-allocate from a caller-supplied size hint. The hint usually comes from a
+// response Content-Length header, which is not trustworthy: a hostile or buggy
+// upstream can declare an arbitrary value and force a matching allocation
+// before a single body byte has arrived. Capping it still gives real payloads
+// the throughput benefit of pre-allocation, without letting the declared size
+// alone drive memory use.
+const maxPreallocSize = 64 << 20 // 64 MiB
+
 // createTeeLogStreamWithSizeHint creates a tee log stream with an optional size hint for buffer pre-allocation.
-// When sizeHint > 0, the buffer is pre-allocated to avoid reallocations during streaming.
+// When sizeHint > 0, the buffer is pre-allocated (up to maxPreallocSize) to avoid reallocations during streaming.
 // This provides ~2x throughput improvement for large payloads.
 func (s *Snooper) createTeeLogStreamWithSizeHint(stream io.ReadCloser, sizeHint int64, logfn func(data []byte)) io.ReadCloser {
 	var buf *bytes.Buffer
 	if sizeHint > 0 {
+		if sizeHint > maxPreallocSize {
+			sizeHint = maxPreallocSize
+		}
+
 		buf = bytes.NewBuffer(make([]byte, 0, sizeHint))
 	} else {
 		buf = new(bytes.Buffer)
