@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/andybalholm/brotli"
+	sszpkg "github.com/ethpandaops/rpc-snooper/ssz"
 	"github.com/ethpandaops/rpc-snooper/types"
 	"github.com/fatih/color"
 	"github.com/sirupsen/logrus"
@@ -196,13 +197,8 @@ func (s *Snooper) logRequest(ctx *ProxyCallContext, req *http.Request, bodyBytes
 		bodyData = []byte{}
 	case strings.Contains(contentType, "application/octet-stream"):
 		if !s.hideBodies {
-			logFields["type"] = "ssz"
-			logFields["body"] = s.formatHexBodyForLog(bodyData)
+			s.formatSSZForLog(bodyData, req.URL.Path, logFields)
 		}
-
-		hexEncoded := make([]byte, len(bodyData)*2)
-		hex.Encode(hexEncoded, bodyData)
-		bodyData = hexEncoded
 	default:
 		_ = json.Unmarshal(bodyData, &parsedData)
 
@@ -219,35 +215,68 @@ func (s *Snooper) logRequest(ctx *ProxyCallContext, req *http.Request, bodyBytes
 
 	ctx.SetData(0, "request_size", len(bodyData))
 
+	// Resolve the Engine API method name for this call, either from the
+	// JSON-RPC body or — for the REST+SSZ transport (#793) — from the URL path.
+	var method string
+
 	if parsedData != nil {
 		switch v := parsedData.(type) {
 		case map[string]interface{}:
-			if method, ok := v["method"].(string); ok {
-				logFields["method"] = method
-
-				if s.metricsEnabled {
-					ctx.SetData(0, "jrpc_method", method)
-				}
+			if m, ok := v["method"].(string); ok {
+				method = m
 			}
 		case []interface{}:
 			methods := make([]string, 0, len(v))
 
 			for _, item := range v {
 				if obj, ok := item.(map[string]interface{}); ok {
-					if method, ok := obj["method"].(string); ok {
-						methods = append(methods, method)
+					if m, ok := obj["method"].(string); ok {
+						methods = append(methods, m)
 					}
 				}
 			}
 
-			if len(methods) > 0 {
-				logFields["methods"] = strings.Join(methods, ", ")
-			}
+			method = strings.Join(methods, ", ")
 		}
 	}
 
+	if method == "" {
+		if endpoint := sszpkg.MatchRoute(req.URL.Path); endpoint != nil {
+			method = endpoint.Method
+		}
+	}
+
+	// Stash the method so the matching response line can show it too, and so
+	// metrics collection can label the call.
+	if method != "" {
+		ctx.SetData(0, "jrpc_method", method)
+	}
+
 	s.processRequestModules(ctx, req, bodyData, parsedData, contentType)
-	s.logger.WithFields(logFields).Infof("REQUEST #%v: %v %v", ctx.callIndex, req.Method, req.URL.String())
+	s.logger.WithFields(logFields).Infof("REQUEST #%v: [%v] %v %v%v", ctx.callIndex, protoTag(req), req.Method, req.URL.String(), methodSuffix(method))
+}
+
+// protoTag renders the autodetected wire protocol of a request as a short tag:
+// "h2c" for HTTP/2 cleartext (the REST+SSZ Engine API transport) and "http/1.1"
+// otherwise (JSON-RPC). The snooper forwards each call to the EL using this
+// same protocol, so the tag also reflects the upstream connection.
+func protoTag(req *http.Request) string {
+	if req.ProtoMajor == 2 {
+		return "h2c"
+	}
+
+	return "http/1.1"
+}
+
+// methodSuffix renders a resolved Engine API method as a readable inline
+// suffix (" → engine_forkchoiceUpdatedV3"). Returns "" when unknown, so calls
+// that aren't Engine API (or that we can't classify) stay uncluttered.
+func methodSuffix(method string) string {
+	if method == "" {
+		return ""
+	}
+
+	return " → " + method
 }
 
 func (s *Snooper) decompressBody(data []byte, contentEncoding string) ([]byte, error) {
@@ -309,13 +338,8 @@ func (s *Snooper) logResponse(ctx *ProxyCallContext, req *http.Request, rsp *htt
 		bodyData = []byte{}
 	case strings.Contains(contentType, "application/octet-stream"):
 		if !s.hideBodies {
-			logFields["type"] = "ssz"
-			logFields["body"] = s.formatHexBodyForLog(bodyData)
+			s.formatSSZForLog(bodyData, req.URL.Path, logFields)
 		}
-
-		hexEncoded := make([]byte, len(bodyData)*2)
-		hex.Encode(hexEncoded, bodyData)
-		bodyData = hexEncoded
 	default:
 		_ = json.Unmarshal(bodyData, &parsedData)
 
@@ -334,8 +358,11 @@ func (s *Snooper) logResponse(ctx *ProxyCallContext, req *http.Request, rsp *htt
 		logFields["duration_ms"] = d.Milliseconds()
 	}
 
+	// Echo the method resolved on the request so request/response lines pair up.
+	method, _ := ctx.GetData(0, "jrpc_method").(string)
+
 	s.processResponseModules(ctx, req, rsp, bodyData, parsedData, contentType)
-	s.logger.WithFields(logFields).Infof("RESPONSE #%v: %v %v", ctx.callIndex, req.Method, req.URL.String())
+	s.logger.WithFields(logFields).Infof("RESPONSE #%v: [%v] %v %v%v", ctx.callIndex, protoTag(req), req.Method, req.URL.String(), methodSuffix(method))
 }
 
 func (s *Snooper) logEventResponse(ctx *ProxyCallContext, req *http.Request, rsp *http.Response, body []byte) {
@@ -505,4 +532,23 @@ func (s *Snooper) processEventModules(ctx *ProxyCallContext, _ *http.Request, rs
 	if err != nil {
 		s.logger.WithError(err).Warn("Module processing failed for event stream")
 	}
+}
+
+// formatSSZForLog populates logFields for an SSZ body by matching
+// the URL path to an Engine API method name and displaying the byte size.
+func (s *Snooper) formatSSZForLog(
+	data []byte, urlPath string,
+	logFields logrus.Fields,
+) {
+	if endpoint := sszpkg.MatchRoute(urlPath); endpoint != nil {
+		logFields["type"] = fmt.Sprintf("ssz (%s)", endpoint.Method)
+	} else {
+		logFields["type"] = "ssz"
+	}
+
+	// SSZ is binary and not self-describing, so we can't pretty-print it like
+	// JSON. Emit the raw body as hex (honouring truncation) so the on-wire
+	// content is still visible and can be decoded offline. The byte count is
+	// already on the log line via the "length" field.
+	logFields["body"] = s.formatHexBodyForLog(data)
 }
