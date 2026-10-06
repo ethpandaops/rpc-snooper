@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,7 +18,7 @@ import (
 type ProxyCallContext struct {
 	callIndex    uint64
 	context      context.Context
-	cancelFn     context.CancelFunc
+	cancelFn     context.CancelCauseFunc
 	cancelled    atomic.Bool
 	deadline     time.Time
 	updateChan   chan time.Duration
@@ -41,7 +42,7 @@ func (s *Snooper) newProxyCallContext(parent context.Context, timeout time.Durat
 		reqSentChan: make(chan struct{}),
 		data:        make(map[string]interface{}),
 	}
-	callCtx.context, callCtx.cancelFn = context.WithCancel(parent)
+	callCtx.context, callCtx.cancelFn = context.WithCancelCause(parent)
 
 	go callCtx.processCallContext()
 
@@ -58,7 +59,7 @@ ctxLoop:
 		case <-callContext.context.Done():
 			break ctxLoop
 		case <-time.After(timeout):
-			callContext.cancelFn()
+			callContext.cancelFn(context.DeadlineExceeded)
 			callContext.cancelled.Store(true)
 			time.Sleep(10 * time.Millisecond)
 		}
@@ -146,7 +147,29 @@ func (s *Snooper) processProxyCall(w http.ResponseWriter, r *http.Request) error
 	}
 
 	callContext := s.newProxyCallContext(r.Context(), s.CallTimeout)
-	defer callContext.cancelFn()
+	defer callContext.cancelFn(nil)
+
+	outcomeStart := time.Now()
+	outcome := callOutcomeRequestError
+
+	if s.metricsEnabled {
+		s.callOutcomeMetrics.Start(s.target.Host)
+	}
+
+	defer func() {
+		// Observe before deferred cleanup cancels the context. A completed
+		// body transfer remains complete if the caller cancels concurrently.
+		if outcome != callOutcomeCompleted {
+			switch {
+			case errors.Is(context.Cause(callContext.context), context.DeadlineExceeded):
+				outcome = callOutcomeDeadlineExceeded
+			case callContext.context.Err() == context.Canceled:
+				outcome = callOutcomeCanceled
+			}
+		}
+
+		s.recordCallOutcome(callContext, outcome, time.Since(outcomeStart))
+	}()
 
 	// pass all headers
 	hh := http.Header{}
@@ -205,6 +228,8 @@ func (s *Snooper) processProxyCall(w http.ResponseWriter, r *http.Request) error
 		return fmt.Errorf("proxy context cancelled")
 	}
 
+	outcome = callOutcomeResponseError
+
 	callContext.setStreamReader(resp.Body)
 
 	respContentType := resp.Header.Get("Content-Type")
@@ -233,6 +258,9 @@ func (s *Snooper) processProxyCall(w http.ResponseWriter, r *http.Request) error
 		}
 
 		_, err := s.processEventStreamResponse(callContext, r, w, resp)
+		if (err == nil || err == io.EOF) && callContext.context.Err() == nil {
+			outcome = callOutcomeCompleted
+		}
 		if err != nil {
 			s.logger.WithField("callidx", callContext.callIndex).Warnf("event stream error: %v", err)
 		}
@@ -262,6 +290,8 @@ func (s *Snooper) processProxyCall(w http.ResponseWriter, r *http.Request) error
 		if err != nil {
 			return fmt.Errorf("proxy response stream error: %w", err)
 		}
+
+		outcome = callOutcomeCompleted
 	}
 
 	return nil

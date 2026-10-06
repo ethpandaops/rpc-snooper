@@ -26,14 +26,15 @@ import (
 type Snooper struct {
 	CallTimeout time.Duration
 
-	target         *url.URL
-	logger         logrus.FieldLogger
-	api            *API
-	moduleManager  *modules.Manager
-	apiServer      *http.Server
-	apiAuth        map[string]string
-	metricsServer  *http.Server
-	metricsEnabled bool
+	target             *url.URL
+	logger             logrus.FieldLogger
+	api                *API
+	moduleManager      *modules.Manager
+	apiServer          *http.Server
+	apiAuth            map[string]string
+	metricsServer      *http.Server
+	metricsEnabled     bool
+	callOutcomeMetrics *metrics.CallOutcomeMetrics
 
 	callIndexCounter uint64
 	callIndexMutex   sync.Mutex
@@ -70,7 +71,8 @@ func NewSnooper(target string, logger logrus.FieldLogger, xatuConfig *xatu.Confi
 	}
 
 	snooper := &Snooper{
-		CallTimeout: 60 * time.Second,
+		CallTimeout:        60 * time.Second,
+		callOutcomeMetrics: metrics.DefaultCallOutcomeMetrics,
 
 		target:               targetURL,
 		logger:               logger,

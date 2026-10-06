@@ -18,7 +18,7 @@ func TestCancelledFlagRaceFree(t *testing.T) {
 	// Short timeout so the watchdog fires and writes cancelled during the read
 	// window below.
 	cc := s.newProxyCallContext(context.Background(), 5*time.Millisecond)
-	defer cc.cancelFn()
+	defer cc.cancelFn(nil)
 
 	var wg sync.WaitGroup
 
@@ -46,11 +46,12 @@ func TestCancelledFlagRaceFree(t *testing.T) {
 // The watchdog closes ProxyCallContext.streamReader on cancellation while the
 // request goroutine sets it once the upstream responds. This exercises that
 // set-versus-close interleaving; the mutex keeps it race-free. Run under -race.
-func TestStreamReaderRaceFree(t *testing.T) {
+func TestStreamReaderRaceFree(_ *testing.T) {
 	for iter := 0; iter < 500; iter++ {
 		cc := &ProxyCallContext{}
 
 		var wg sync.WaitGroup
+
 		wg.Add(2)
 
 		go func() {
