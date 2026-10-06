@@ -141,6 +141,29 @@ curl http://localhost:9090/metrics
 **Available Metrics:**
 - Go runtime metrics (garbage collection, memory usage, etc.)
 - HTTP request/response metrics (when processing requests)
+- `rpc_snooper_calls_started_total{server}`: calls accepted for proxying
+- `rpc_snooper_call_outcomes_total{server,outcome}`: one terminal outcome per call
+- `rpc_snooper_call_elapsed_seconds{server,outcome}`: elapsed time until that outcome,
+  including request upload and response body transfer
+
+Outcomes are `completed`, `canceled`, `deadline_exceeded`, `request_error` (URL or
+upstream transport failure), and `response_error` (response transfer failure).
+`completed` means the HTTP body was transferred; it does not imply an Engine
+`VALID` result. HTTP error replies with complete bodies are also `completed`.
+Snooper timeouts and caller deadlines are both `deadline_exceeded`. Calls rejected
+by flow control are not proxied and are excluded. A retry is a separate call.
+
+Each terminal outcome also produces an info-level `CALL-OUTCOME` log with
+`callidx`, `outcome`, and `elapsed_ms`, even when metrics are disabled. `callidx`
+correlates with the request/response log number. This log may appear before the
+asynchronous request log, so correlate by ID rather than log order.
+
+Existing response metrics and Xatu Engine events remain response-based: a canceled
+call has no fabricated Engine response. These new metrics expose the missing-call
+fraction and time to cancellation, but do not add canceled rows to Xatu's Engine
+latency tables. Persisting request outcomes there needs a separate event/schema
+and ingestion change. Completion-only latency charts should be interpreted with
+outcome counts, and cancellation duration is not upstream execution duration.
 
 ## Common Usage Scenarios
 
