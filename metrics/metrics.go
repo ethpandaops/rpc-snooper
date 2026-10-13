@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/ethpandaops/rpc-snooper/types"
@@ -108,11 +109,7 @@ func CreateMetricsEntryFromContexts(target *url.URL, reqCtx *types.RequestContex
 	if reqCtx != nil {
 		entry.Method = reqCtx.Method
 		entry.Hostname = reqCtx.URL.Host
-		entry.URI = reqCtx.URL.Path
-
-		if reqCtx.URL.RawQuery != "" {
-			entry.URI += "?" + reqCtx.URL.RawQuery
-		}
+		entry.URI = routeFromPath(reqCtx.URL.Path)
 
 		entry.BytesReceived = int64(len(reqCtx.BodyBytes))
 	}
@@ -130,4 +127,33 @@ func CreateMetricsEntryFromContexts(target *url.URL, reqCtx *types.RequestContex
 	}
 
 	return entry
+}
+
+func routeFromPath(path string) string {
+	segments := strings.Split(path, "/")
+	for i, segment := range segments {
+		if isIDSegment(segment) {
+			segments[i] = "{id}"
+		}
+	}
+
+	return strings.Join(segments, "/")
+}
+
+func isIDSegment(segment string) bool {
+	if strings.HasPrefix(segment, "0x") {
+		return true
+	}
+
+	if segment == "" {
+		return false
+	}
+
+	for _, c := range segment {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+
+	return true
 }
