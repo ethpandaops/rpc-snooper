@@ -465,3 +465,68 @@ func TestCallDurationIncludesResponseBodyTransfer(t *testing.T) {
 
 	t.Logf("Captured duration: %v (body delay was %v)", d, bodyDelay)
 }
+
+// closedAfterContentReader yields its data, then fails every further read the way a
+// server request body does once the server has closed it after flushing the response.
+type closedAfterContentReader struct {
+	data []byte
+	off  int
+}
+
+func (c *closedAfterContentReader) Read(p []byte) (int, error) {
+	if c.off < len(c.data) {
+		n := copy(p, c.data[c.off:])
+		c.off += n
+
+		return n, nil
+	}
+
+	return 0, http.ErrBodyReadAfterClose
+}
+
+// TestResponseSurvivesRequestBodyClosedAfterContent verifies that the origin connection
+// is not dropped mid-response when the client's request body becomes unreadable after
+// its ContentLength bytes were sent. The transport probes the body for excess data after
+// sending it; if that probe reached a closed server body, the transport closed the
+// origin connection and the client got a truncated 200 response.
+func TestResponseSurvivesRequestBodyClosedAfterContent(t *testing.T) {
+	responseBody := bytes.Repeat([]byte("x"), 64*1024)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body)
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(responseBody[:1024])
+
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+
+		time.Sleep(50 * time.Millisecond)
+
+		_, _ = w.Write(responseBody[1024:])
+	}))
+	defer upstream.Close()
+
+	logger := logrus.New()
+	logger.SetLevel(logrus.PanicLevel)
+
+	snooper, err := NewSnooper(upstream.URL, logger, nil, "")
+	require.NoError(t, err)
+
+	defer snooper.Shutdown()
+
+	requestData := []byte(`{"jsonrpc":"2.0","method":"engine_getPayloadV6","params":["0x01"],"id":1}`)
+	req := httptest.NewRequest(http.MethodPost, "/", &closedAfterContentReader{data: requestData})
+	req.Header.Set("Content-Type", "application/json")
+	req.ContentLength = int64(len(requestData))
+
+	rec := httptest.NewRecorder()
+
+	snooper.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, len(responseBody), rec.Body.Len(), "full response body should be received")
+	assert.True(t, bytes.Equal(responseBody, rec.Body.Bytes()), "response body should be intact")
+}
