@@ -159,12 +159,25 @@ func (s *Snooper) processProxyCall(w http.ResponseWriter, r *http.Request) error
 	bodyReader := s.createRequestProcessingStream(callContext, r, r.Body)
 	defer bodyReader.Close()
 
+	// After sending ContentLength bytes the transport reads the body once more to check
+	// for excess data. By then the origin may already have answered and this server,
+	// having flushed the start of the response, may have closed r.Body; the probe then
+	// fails and the transport drops the origin connection mid-response. Ending the body
+	// at ContentLength keeps the probe off r.Body.
+	outBody := bodyReader
+	if r.ContentLength > 0 {
+		outBody = struct {
+			io.Reader
+			io.Closer
+		}{io.LimitReader(bodyReader, r.ContentLength), bodyReader}
+	}
+
 	// construct request to send to origin server
 	req := &http.Request{
 		Method:        r.Method,
 		URL:           proxyURL,
 		Header:        hh,
-		Body:          bodyReader,
+		Body:          outBody,
 		ContentLength: r.ContentLength,
 		Close:         r.Close,
 	}
