@@ -168,7 +168,13 @@ func (s *Snooper) processProxyCall(w http.ResponseWriter, r *http.Request) error
 		ContentLength: r.ContentLength,
 		Close:         r.Close,
 	}
-	client := &http.Client{Timeout: 0}
+	// Forward using the same HTTP version the downstream client used: HTTP/2
+	// cleartext for the REST+SSZ Engine API (#793), HTTP/1.1 for JSON-RPC.
+	client := s.h1Client
+	if r.ProtoMajor == 2 {
+		client = s.h2cClient
+	}
+
 	req = req.WithContext(callContext.context)
 
 	callStart := time.Now()

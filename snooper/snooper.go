@@ -35,6 +35,13 @@ type Snooper struct {
 	metricsServer  *http.Server
 	metricsEnabled bool
 
+	// Upstream clients. h1Client speaks HTTP/1.1 (JSON-RPC), h2cClient speaks
+	// HTTP/2 cleartext (h2c) for the REST+SSZ Engine API (execution-apis #793).
+	// We forward each call using the same protocol the downstream client used,
+	// so geth's single engine port sees JSON-RPC as HTTP/1.1 and REST as HTTP/2.
+	h1Client  *http.Client
+	h2cClient *http.Client
+
 	callIndexCounter uint64
 	callIndexMutex   sync.Mutex
 
@@ -80,6 +87,11 @@ func NewSnooper(target string, logger logrus.FieldLogger, xatuConfig *xatu.Confi
 		flowBlocked:          make(map[string]bool),
 		xatuService:          xatuService,
 		jwtSecret:            jwtSecret,
+		h1Client:             &http.Client{Timeout: 0},
+		h2cClient: &http.Client{
+			Timeout:   0,
+			Transport: &http.Transport{Protocols: h2cClientProtocols()},
+		},
 	}
 
 	// Set up metadata fetcher if xatu is enabled
@@ -179,9 +191,16 @@ func (s *Snooper) StartServer(host string, port int, noAPI bool) error {
 	n.Use(negroni.NewRecovery())
 	n.UseHandler(router)
 
+	// Accept both HTTP/1.1 (JSON-RPC) and HTTP/2 cleartext prior-knowledge
+	// connections (REST+SSZ Engine API, execution-apis #793) on the same port.
+	protocols := new(http.Protocols)
+	protocols.SetHTTP1(true)
+	protocols.SetUnencryptedHTTP2(true)
+
 	srv := &http.Server{
 		Addr:              fmt.Sprintf("%v:%v", host, port),
 		Handler:           n,
+		Protocols:         protocols,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -362,4 +381,11 @@ func (s *Snooper) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			s.logger.Errorf("failed writing response: %v", err)
 		}
 	}
+}
+
+func h2cClientProtocols() *http.Protocols {
+	protocols := new(http.Protocols)
+	protocols.SetUnencryptedHTTP2(true)
+
+	return protocols
 }
