@@ -197,7 +197,7 @@ func (s *Snooper) logRequest(ctx *ProxyCallContext, req *http.Request, bodyBytes
 		bodyData = []byte{}
 	case strings.Contains(contentType, "application/octet-stream"):
 		if !s.hideBodies {
-			s.formatSSZForLog(bodyData, req.URL.Path, logFields)
+			s.formatSSZForLog(bodyData, req, logFields)
 		}
 	default:
 		_ = json.Unmarshal(bodyData, &parsedData)
@@ -216,7 +216,8 @@ func (s *Snooper) logRequest(ctx *ProxyCallContext, req *http.Request, bodyBytes
 	ctx.SetData(0, "request_size", len(bodyData))
 
 	// Resolve the Engine API method name for this call, either from the
-	// JSON-RPC body or — for the REST+SSZ transport (#793) — from the URL path.
+	// JSON-RPC body or — for the REST+SSZ transport (#793) — from the URL path
+	// and Eth-Execution-Version header.
 	var method string
 
 	if parsedData != nil {
@@ -241,7 +242,7 @@ func (s *Snooper) logRequest(ctx *ProxyCallContext, req *http.Request, bodyBytes
 	}
 
 	if method == "" {
-		if endpoint := sszpkg.MatchRoute(req.URL.Path); endpoint != nil {
+		if endpoint := sszpkg.MatchRoute(req.URL.Path, req.Header.Get("Eth-Execution-Version")); endpoint != nil {
 			method = endpoint.Method
 		}
 	}
@@ -338,7 +339,7 @@ func (s *Snooper) logResponse(ctx *ProxyCallContext, req *http.Request, rsp *htt
 		bodyData = []byte{}
 	case strings.Contains(contentType, "application/octet-stream"):
 		if !s.hideBodies {
-			s.formatSSZForLog(bodyData, req.URL.Path, logFields)
+			s.formatSSZForLog(bodyData, req, logFields)
 		}
 	default:
 		_ = json.Unmarshal(bodyData, &parsedData)
@@ -535,12 +536,12 @@ func (s *Snooper) processEventModules(ctx *ProxyCallContext, _ *http.Request, rs
 }
 
 // formatSSZForLog populates logFields for an SSZ body by matching
-// the URL path to an Engine API method name and displaying the byte size.
+// the request to an Engine API method name and displaying the byte size.
 func (s *Snooper) formatSSZForLog(
-	data []byte, urlPath string,
+	data []byte, req *http.Request,
 	logFields logrus.Fields,
 ) {
-	if endpoint := sszpkg.MatchRoute(urlPath); endpoint != nil {
+	if endpoint := sszpkg.MatchRoute(req.URL.Path, req.Header.Get("Eth-Execution-Version")); endpoint != nil {
 		logFields["type"] = fmt.Sprintf("ssz (%s)", endpoint.Method)
 	} else {
 		logFields["type"] = "ssz"
