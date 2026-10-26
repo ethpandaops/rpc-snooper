@@ -1,6 +1,7 @@
 package snooper
 
 import (
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -14,7 +15,7 @@ import (
 func TestFormatSSZForLog(t *testing.T) {
 	s := &Snooper{logger: logrus.New()}
 
-	payloadsReq := httptest.NewRequest("POST", "/engine/v1/payloads", nil)
+	payloadsReq := httptest.NewRequest("POST", "/engine/v1/payloads", http.NoBody)
 	payloadsReq.Header.Set("Eth-Execution-Version", "amsterdam")
 
 	t.Run("known route: hex body + method-tagged type", func(t *testing.T) {
@@ -27,7 +28,7 @@ func TestFormatSSZForLog(t *testing.T) {
 
 	t.Run("unknown route: still hex body", func(t *testing.T) {
 		fields := logrus.Fields{}
-		s.formatSSZForLog([]byte{0xde, 0xad, 0xbe, 0xef}, httptest.NewRequest("POST", "/engine/v9/whatever", nil), fields)
+		s.formatSSZForLog([]byte{0xde, 0xad, 0xbe, 0xef}, httptest.NewRequest("POST", "/engine/v9/whatever", http.NoBody), fields)
 
 		assert.Equal(t, "ssz", fields["type"])
 		assert.Equal(t, "0xdeadbeef", fields["body"])

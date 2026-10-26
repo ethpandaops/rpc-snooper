@@ -3,19 +3,14 @@ package snooper
 import (
 	"context"
 	"crypto/subtle"
-	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"sync"
 	"time"
-
-	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
 
 	"github.com/ethpandaops/rpc-snooper/metrics"
 	"github.com/ethpandaops/rpc-snooper/modules"
@@ -94,17 +89,8 @@ func NewSnooper(target string, logger logrus.FieldLogger, xatuConfig *xatu.Confi
 		jwtSecret:            jwtSecret,
 		h1Client:             &http.Client{Timeout: 0},
 		h2cClient: &http.Client{
-			Timeout: 0,
-			// h2c (cleartext HTTP/2) transport: AllowHTTP lets us use the
-			// "http" scheme, and DialTLSContext dials a plain TCP connection
-			// instead of negotiating TLS.
-			Transport: &http2.Transport{
-				AllowHTTP: true,
-				DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
-					var d net.Dialer
-					return d.DialContext(ctx, network, addr)
-				},
-			},
+			Timeout:   0,
+			Transport: &http.Transport{Protocols: h2cClientProtocols()},
 		},
 	}
 
@@ -205,12 +191,16 @@ func (s *Snooper) StartServer(host string, port int, noAPI bool) error {
 	n.Use(negroni.NewRecovery())
 	n.UseHandler(router)
 
-	// Wrap the handler with h2c so the proxy accepts both HTTP/1.1 (JSON-RPC)
-	// and HTTP/2 cleartext prior-knowledge connections (REST+SSZ Engine API,
-	// execution-apis #793) on the same port.
+	// Accept both HTTP/1.1 (JSON-RPC) and HTTP/2 cleartext prior-knowledge
+	// connections (REST+SSZ Engine API, execution-apis #793) on the same port.
+	protocols := new(http.Protocols)
+	protocols.SetHTTP1(true)
+	protocols.SetUnencryptedHTTP2(true)
+
 	srv := &http.Server{
 		Addr:              fmt.Sprintf("%v:%v", host, port),
-		Handler:           h2c.NewHandler(n, &http2.Server{}),
+		Handler:           n,
+		Protocols:         protocols,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -391,4 +381,11 @@ func (s *Snooper) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			s.logger.Errorf("failed writing response: %v", err)
 		}
 	}
+}
+
+func h2cClientProtocols() *http.Protocols {
+	protocols := new(http.Protocols)
+	protocols.SetUnencryptedHTTP2(true)
+
+	return protocols
 }

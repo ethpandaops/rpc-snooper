@@ -22,7 +22,7 @@ var routes = []routePattern{
 	{re: regexp.MustCompile(`^/engine/v1/forkchoice$`), method: "engine_forkchoiceUpdated", forkScoped: true},
 	{re: regexp.MustCompile(`^/engine/v1/bodies/hash$`), method: "engine_getPayloadBodiesByHash", forkScoped: true},
 	{re: regexp.MustCompile(`^/engine/v1/bodies$`), method: "engine_getPayloadBodiesByRange", forkScoped: true},
-	{re: regexp.MustCompile(`^/engine/v1/blobs/v([1-9][0-9]*)$`), method: "engine_getBlobsV"},
+	{re: regexp.MustCompile(`^/engine/v1/blobs/v([1-9]\d*)$`), method: "engine_getBlobsV"},
 	{re: regexp.MustCompile(`^/engine/v1/identity$`), method: "engine_getClientVersionV1"},
 	{re: regexp.MustCompile(`^/engine/v1/capabilities$`), method: "engine_exchangeCapabilities"},
 }
