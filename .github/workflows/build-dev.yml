@@ -48,7 +48,7 @@ jobs:
         # Manual tags are written with '-' for '/', and may not use a reserved name.
         manual_tag="${MANUAL_DOCKER_TAG//\//-}"
         if [[ -n "$manual_tag" ]]; then
-          if [[ ! "$manual_tag" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,100}$ || "$manual_tag" =~ ^(master|main|latest|pr)(-|$)|^v[0-9] ]]; then
+          if [[ ! "$manual_tag" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,100}$ || "$manual_tag" =~ ^(master|main|latest|pr)(-|$)|^v?[0-9] ]]; then
             echo "::error::reserved or invalid docker tag"
             exit 1
           fi
