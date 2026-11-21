@@ -90,7 +90,7 @@ jobs:
           RELEASE_SUFFIX: ${{ env.RELEASE_SUFFIX }}
       - name: Attest images
         id: attest
-        uses: ethpandaops/actions/mirror-image@62e1509a4fcb59de57d51c05f1e2843f2439fa99
+        uses: ethpandaops/actions/mirror-image@738aeadbcdc54f1c9af659d35f8ef29dd5c0fae6
         with:
           goreleaser-artifacts: dist/artifacts.json
           mirror: "false"
@@ -106,7 +106,7 @@ jobs:
       id-token: write      # authenticate to the image mirror
     steps:
       - name: Mirror to Docker Hub
-        uses: ethpandaops/actions/mirror-image@62e1509a4fcb59de57d51c05f1e2843f2439fa99
+        uses: ethpandaops/actions/mirror-image@738aeadbcdc54f1c9af659d35f8ef29dd5c0fae6
         with:
           image: ${{ needs.goreleaser.outputs.image }}
           tags: ${{ needs.goreleaser.outputs.digests }}

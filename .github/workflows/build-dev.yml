@@ -32,6 +32,7 @@ jobs:
         HAS_DOCKER_IMAGE_LABEL: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'build-docker-image') }}
         SAME_REPOSITORY_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
         MANUAL_DOCKER_TAG: ${{ inputs.docker_tag }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
       run: |
         has_docker_image_label="$HAS_DOCKER_IMAGE_LABEL"
         same_repository_pr="$SAME_REPOSITORY_PR"
@@ -61,6 +62,12 @@ jobs:
           build_docker="false"
         fi
 
+        # PR builds are tagged pr-<number>, never with the PR's branch name, which could
+        # otherwise overwrite any existing tag, such as latest or a release.
+        if [[ -z "$manual_tag" ]] && [[ -n "$PR_NUMBER" ]]; then
+          branch_name="pr-$PR_NUMBER"
+        fi
+
         echo "run_builds=$run_builds" >> $GITHUB_OUTPUT
         echo "build_docker=$build_docker" >> $GITHUB_OUTPUT
         echo "docker_tag=$branch_name" >> $GITHUB_OUTPUT
@@ -72,6 +79,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
     steps:
     - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -81,23 +91,32 @@ jobs:
 
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
-    - name: Login to Docker Hub
+    - name: Login to GitHub Container Registry
       uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
       with:
-        username: ${{ secrets.DOCKERHUB_USERNAME }}
-        password: ${{ secrets.DOCKERHUB_TOKEN }}
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ github.token }}
 
+    # Without provenance the pushed digest is the amd64 image manifest itself,
+    # which the multiarch job merges and mirrors by digest.
     - name: Build and push amd64 docker image
+      id: build
       env:
-        DOCKER_REPO: "ethpandaops/rpc-snooper"
+        DOCKER_REPO: "ghcr.io/ethpandaops/rpc-snooper"
         DOCKER_TAG: ${{ needs.prinfo.outputs.docker_tag }}
         SHA_SHORT: ${{ steps.vars.outputs.sha_short }}
       run: |
         docker buildx build . \
           --file Dockerfile \
           --platform linux/amd64 \
+          --provenance=false \
+          --sbom=false \
           --tag "${DOCKER_REPO}:${DOCKER_TAG}-${SHA_SHORT}-amd64" \
+          --metadata-file "$RUNNER_TEMP/build.json" \
           --push
+        digest=$(jq -er '."containerimage.digest"' "$RUNNER_TEMP/build.json")
+        echo "digest=$digest" >> "$GITHUB_OUTPUT"
 
   build_arm64_docker_image:
     name: "Build arm64 docker image"
@@ -106,6 +125,9 @@ jobs:
     runs-on: ubuntu-24.04-arm
     permissions:
       contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
     steps:
     - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -115,23 +137,32 @@ jobs:
 
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
-    - name: Login to Docker Hub
+    - name: Login to GitHub Container Registry
       uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
       with:
-        username: ${{ secrets.DOCKERHUB_USERNAME }}
-        password: ${{ secrets.DOCKERHUB_TOKEN }}
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ github.token }}
 
+    # Without provenance the pushed digest is the arm64 image manifest itself,
+    # which the multiarch job merges and mirrors by digest.
     - name: Build and push arm64 docker image
+      id: build
       env:
-        DOCKER_REPO: "ethpandaops/rpc-snooper"
+        DOCKER_REPO: "ghcr.io/ethpandaops/rpc-snooper"
         DOCKER_TAG: ${{ needs.prinfo.outputs.docker_tag }}
         SHA_SHORT: ${{ steps.vars.outputs.sha_short }}
       run: |
         docker buildx build . \
           --file Dockerfile \
           --platform linux/arm64 \
+          --provenance=false \
+          --sbom=false \
           --tag "${DOCKER_REPO}:${DOCKER_TAG}-${SHA_SHORT}-arm64" \
+          --metadata-file "$RUNNER_TEMP/build.json" \
           --push
+        digest=$(jq -er '."containerimage.digest"' "$RUNNER_TEMP/build.json")
+        echo "digest=$digest" >> "$GITHUB_OUTPUT"
 
   build_multiarch_image:
     name: "Build multiarch docker manifest"
@@ -140,6 +171,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      packages: write
+      id-token: write      # attest, and authenticate to the image mirror
+      attestations: write
     steps:
     - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -149,22 +183,46 @@ jobs:
 
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
-    - name: Login to Docker Hub
+    - name: Login to GitHub Container Registry
       uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
       with:
-        username: ${{ secrets.DOCKERHUB_USERNAME }}
-        password: ${{ secrets.DOCKERHUB_TOKEN }}
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ github.token }}
 
-    # combine the natively-built per-arch images into the branch-named multiarch tags
+    # combine the natively-built per-arch images, by digest, into the branch-named multiarch tags
     - name: Create multiarch manifests
+      id: manifest
       env:
-        DOCKER_REPO: "ethpandaops/rpc-snooper"
+        DOCKER_REPO: "ghcr.io/ethpandaops/rpc-snooper"
         DOCKER_TAG: ${{ needs.prinfo.outputs.docker_tag }}
         SHA_SHORT: ${{ steps.vars.outputs.sha_short }}
+        AMD64_DIGEST: ${{ needs.build_amd64_docker_image.outputs.digest }}
+        ARM64_DIGEST: ${{ needs.build_arm64_docker_image.outputs.digest }}
       run: |
         docker buildx imagetools create \
+          --metadata-file "$RUNNER_TEMP/manifest.json" \
           -t "${DOCKER_REPO}:${DOCKER_TAG}" \
           -t "${DOCKER_REPO}:${DOCKER_TAG}-latest" \
           -t "${DOCKER_REPO}:${DOCKER_TAG}-${SHA_SHORT}" \
-          "${DOCKER_REPO}:${DOCKER_TAG}-${SHA_SHORT}-amd64" \
-          "${DOCKER_REPO}:${DOCKER_TAG}-${SHA_SHORT}-arm64"
+          "${DOCKER_REPO}@${AMD64_DIGEST}" \
+          "${DOCKER_REPO}@${ARM64_DIGEST}"
+        digest=$(jq -er '."containerimage.descriptor".digest' "$RUNNER_TEMP/manifest.json")
+        {
+          echo "tags<<EOF"
+          echo "${DOCKER_TAG}@${digest}"
+          echo "${DOCKER_TAG}-latest@${digest}"
+          echo "${DOCKER_TAG}-${SHA_SHORT}@${digest}"
+          echo "${DOCKER_TAG}-${SHA_SHORT}-amd64@${AMD64_DIGEST}"
+          echo "${DOCKER_TAG}-${SHA_SHORT}-arm64@${ARM64_DIGEST}"
+          echo "EOF"
+        } >> "$GITHUB_OUTPUT"
+
+    # All images were built on GitHub-hosted runners in this run, so this job
+    # attests the index and the per-arch images behind it.
+    - name: Attest and mirror to Docker Hub
+      uses: ethpandaops/actions/mirror-image@738aeadbcdc54f1c9af659d35f8ef29dd5c0fae6
+      with:
+        image: rpc-snooper
+        tags: ${{ steps.manifest.outputs.tags }}
+        mirror-url: ${{ secrets.IMAGE_MIRROR_URL }}
